@@ -117,8 +117,7 @@ module Truffler
         filters = {}
         boosts = {}
         intent = {}
-        stems = []
-        terms = []
+        names = {}
         labels(model, tenant_key, user_key).each_value do |label|
           key = storage_key(label, answers, tenant_key)
           next unless key
@@ -131,16 +130,16 @@ module Truffler
             boosts[key] = intent[key] = label.boost || DEFAULT_BOOST
           else next
           end
-          stems.concat(label_terms(key))
-          terms.concat(name_terms(option_name(label, key, tenant_key)))
+          names[key] = [ label_terms(key), name_terms(option_name(label, key, tenant_key)) ]
         end
 
         query = Search::Query.new(request.state["query"])
-        roles = reconcile(query, request.token_ids.transform_values { |id| answers.choice(id) }, stems.uniq, terms.uniq)
-        keyword_tokens = query.tokens.each_index.filter_map { |position| query.tokens[position] if roles[position] == "keyword" }
-        label_term_tokens = query.tokens.each_index.filter_map { |position| query.tokens[position] if roles[position] == "label_term" }
-        Search::Encoding.new(filters: filters, boosts: boosts, intent_vector: intent, keyword_tokens: keyword_tokens,
-          label_term_tokens: label_term_tokens)
+        roles, sources, soft = reconcile(query, request.token_ids.transform_values { |id| answers.choice(id) }, names)
+        tokens = ->(positions) { positions.map { |position| query.tokens[position] } }
+        Search::Encoding.new(filters: filters, boosts: boosts, intent_vector: intent,
+          keyword_tokens: tokens.call(roles.keys.select { |position| roles[position] == "keyword" }),
+          label_term_tokens: tokens.call(sources.keys), soft_keyword_tokens: tokens.call(soft).uniq,
+          label_term_sources: sources.group_by { |position, _| query.tokens[position] }.transform_values { |pairs| pairs.flat_map(&:last).uniq })
       end
 
       private
@@ -199,26 +198,34 @@ module Truffler
         end
       end
 
-      # {position => role} for every token. Time phrase words are "time";
-      # exact tokens and unasked words are keywords; a keyword naming an
-      # applied label becomes a label term; stopwords and filler words
-      # become filler unless they are all that would be left of an encoding
-      # that applies no label and no time range (Search::Filler).
-      def reconcile(query, answered, stems, terms)
+      # Returns `[roles, sources, soft]`: {position => role} for every token,
+      # {label-term position => applied storage keys it names}, and the
+      # label-term positions that named a key only by prefix. Time phrase
+      # words are "time"; exact tokens and unasked words are keywords; a
+      # keyword naming an applied label becomes a label term; stopwords and
+      # filler words become filler unless they are all that would be left of
+      # an encoding that applies no label and no time range (Search::Filler).
+      # A word Jev called a label term that names no applied label locally
+      # is sourced to every applied label.
+      def reconcile(query, answered, names)
         roles = query.tokens.each_index.to_h do |position|
           [ position, query.time_position?(position) ? "time" : answered.fetch(position, "keyword") ]
         end
+        matches = roles.keys.to_h { |position| [ position, roles[position] == "time" ? {} : label_matches(query.tokens[position], names) ] }
         words = roles.keys.select { |position| roles[position] == "keyword" && !query.exact_tokens.include?(query.tokens[position]) }
-        words.each { |position| roles[position] = "label_term" if names_label?(query.tokens[position], stems, terms) }
+        words.each { |position| roles[position] = "label_term" if matches[position].any? }
         filler = words.select { |position| roles[position] == "keyword" && Search::Filler.word?(query.tokens[position]) }
-        Search::Filler.drop(filler, keyword_count: roles.values.count("keyword"), anchored: stems.any? || !query.time_phrase.nil?)
+        Search::Filler.drop(filler, keyword_count: roles.values.count("keyword"), anchored: names.any? || !query.time_phrase.nil?)
           .each { |position| roles[position] = "filler" }
-        roles
+        label_terms = roles.keys.select { |position| roles[position] == "label_term" }
+        sources = label_terms.to_h { |position| [ position, matches[position].keys.presence || names.keys ] }
+        soft = (words & label_terms).select { |position| matches[position].values.all?(:prefix) }
+        [ roles, sources, soft ]
       end
 
       # "category:billing" names "category" and "billing"; "needs_action"
       # names "needs_action", "needs", and "action". These key terms also
-      # match by shared stem (see names_label?).
+      # match by shared stem (see label_matches).
       STEM = 3
 
       def label_terms(storage_key)
@@ -242,13 +249,20 @@ module Truffler
         label.option_names(tenant_key)[Search::Encoding.split_key(storage_key).last]
       end
 
-      # "angry" names "anger": the same word ignoring plurals, or, against a
-      # label or option key, two words of four letters or more that share
-      # their first three letters. Display-name words match exactly.
-      def names_label?(word, stems, terms)
+      # {storage key => :exact or :prefix} for the applied labels `word`
+      # names. "angry" names "anger": the same word ignoring plurals is
+      # :exact; against a label or option key, two words of four letters or
+      # more that share their first three letters are :prefix. Display-name
+      # words match exactly only.
+      def label_matches(word, names)
         word = word.singularize
-        terms.include?(word) ||
-          stems.any? { |term| term == word || (word.length > STEM && term.length > STEM && word[0, STEM] == term[0, STEM]) }
+        names.each_with_object({}) do |(key, (stems, terms)), matches|
+          if terms.include?(word) || stems.include?(word)
+            matches[key] = :exact
+          elsif word.length > STEM && stems.any? { |term| term.length > STEM && word[0, STEM] == term[0, STEM] }
+            matches[key] = :prefix
+          end
+        end
       end
 
       def intent_instructions(label)

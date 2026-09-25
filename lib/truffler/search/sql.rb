@@ -5,12 +5,15 @@ module Truffler
     #   w_label * SUM(weight * value) over the intent's nonzero label keys
     #   + w_text * text similarity (inline SQL, or the store's top-K CASE)
     #   + w_keyword * keyword hit + w_exact * exact-source hit
+    #   + SOFT_KEYWORD * w_keyword * soft keyword hit
     #
     # A weighted dot product, not cosine: cosine would divide out magnitude
     # and let a record high on unrelated labels outrank the one the query
     # asked for. Hard filters are EXISTS subqueries that run before scoring.
     class Sql
       LABELS = "truffler_labels".freeze
+      # Share of the keyword weight a soft keyword hit adds (see Encoding).
+      SOFT_KEYWORD = 0.25
 
       attr_reader :model, :tenant_key, :query, :encoding, :vector, :weights
 
@@ -130,20 +133,28 @@ module Truffler
       def keyword_sql
         return @keyword_sql if defined?(@keyword_sql)
 
-        @keyword_sql = keywords.empty? ? nil : keyword_condition(definition.keyword)
+        @keyword_sql = keywords.empty? ? nil : keyword_condition(definition.keyword, keywords)
       end
 
-      def keyword_condition(source)
+      # Any soft keyword hit; soft keywords rank and never narrow.
+      def soft_keyword_sql
+        return @soft_keyword_sql if defined?(@soft_keyword_sql)
+
+        conditions = (encoding.soft_keyword_tokens - keywords).uniq.filter_map { |token| keyword_condition(definition.keyword, [ token ]) }
+        @soft_keyword_sql = conditions.empty? ? nil : conditions.map { |condition| "(#{condition})" }.join(" OR ")
+      end
+
+      def keyword_condition(source, tokens)
         case source
         when Array
           return if source.empty?
 
-          keywords.map do |token|
+          tokens.map do |token|
             pattern = quote("%#{model.sanitize_sql_like(token)}%")
             "(#{source.map { |name| "LOWER(#{column(name)}) LIKE #{pattern} ESCAPE '\\'" }.join(' OR ')})"
           end.join(" AND ")
         when nil then nil
-        else membership_sql(source.call(tenant_scope, keywords))
+        else membership_sql(source.call(tenant_scope, tokens))
         end
       end
 
@@ -189,10 +200,17 @@ module Truffler
         terms = {
           truffler_label_score: (label_score_sql && "#{Float(weights[:label])} * #{label_score_sql}"),
           truffler_text_score: (text_score_sql && "#{Float(weights[:text])} * #{text_score_sql}"),
-          truffler_keyword_score: (keyword_sql && "#{Float(weights[:keyword])} * (CASE WHEN #{keyword_sql} THEN 1.0 ELSE 0.0 END)"),
+          truffler_keyword_score: keyword_score_sql,
           truffler_exact_score: (exact_sql && "#{Float(weights[:exact])} * (CASE WHEN #{exact_sql} THEN 1.0 ELSE 0.0 END)")
         }.compact
         { truffler_score: terms.any? ? terms.values.map { |term| "(#{term})" }.join(" + ") : "0.0", **terms }
+      end
+
+      def keyword_score_sql
+        weight = Float(weights[:keyword])
+        terms = [ (keyword_sql && "#{weight} * (CASE WHEN #{keyword_sql} THEN 1.0 ELSE 0.0 END)"),
+          (soft_keyword_sql && "#{weight * SOFT_KEYWORD} * (CASE WHEN #{soft_keyword_sql} THEN 1.0 ELSE 0.0 END)") ].compact
+        terms.map { |term| "(#{term})" }.join(" + ") if terms.any?
       end
 
       def ordering
