@@ -86,7 +86,7 @@ class BenchmarkRunnerTest < Truffler::TestCase
   test "a plugged-in searcher lights up recall, precision, latency, and query cost" do
     searcher = StubSearcher.new(Bench::Dataset.load(Bench.path("fixtures")))
 
-    report = run_bench(mode: :replay, searcher: searcher)
+    report = run_bench(mode: :replay, searcher: searcher, reranker: StubReranker.new)
 
     metrics = report["metrics"]
     assert_in_delta 1.0, metrics["recall"]["intent"]

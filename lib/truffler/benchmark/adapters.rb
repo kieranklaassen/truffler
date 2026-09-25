@@ -6,7 +6,7 @@ module Truffler
     # the same `call` signature can be passed to Runner instead.
     #
     #   searcher.call(query:, tenant_key:, kind:, model:, params:) => ranked ids
-    #   reranker.call(query:, tenant_key:, model:, candidate_ids:, depth:, params:)
+    #   reranker.call(query:, tenant_key:, model:, candidate_ids:, depth:, params:, client:)
     #     => { requests: Integer, buckets: { id => bucket } }
     module Adapters
       USER = "truffler-bench".freeze
@@ -17,8 +17,8 @@ module Truffler
         loaded.call ? Keystroke.new : NotAvailable.new("U8 keystroke search (Truffler::Search)")
       end
 
-      def reranker(loaded: -> { namespace?(:Smart) })
-        loaded.call ? Smart.new : NotAvailable.new("U10 Smart search runs (Truffler::Smart)")
+      def reranker(loaded: -> { namespace?(:SmartSearch) })
+        loaded.call ? Smart.new : NotAvailable.new("U10 Smart search runs (Truffler::SmartSearch)")
       end
 
       def namespace?(name)
@@ -32,28 +32,40 @@ module Truffler
         end
       end
 
-      # Runs a Smart search with jobs performed inline and counts the rerank
-      # requests from the jev_call notifications.
+      # Runs a Smart search inline: the run starts, plans, and reranks each
+      # chunk in this thread under an unmetered budget, without waiting for
+      # query encoding, so a replay is deterministic. Rerank requests are
+      # counted from the jev_call notifications.
       class Smart
-        def call(query:, tenant_key:, model:, candidate_ids:, **)
+        Unmetered = Struct.new(:priority) do
+          def acquire(priority:, **)
+            Truffler::Budget::Decision.new(:granted, priority, nil)
+          end
+        end
+
+        NoEncodings = Struct.new(:none) do
+          def key(*, **) = nil
+          def encoded?(*) = false
+          def in_flight?(*) = false
+        end
+
+        def call(query:, tenant_key:, model:, candidate_ids:, client: Truffler.config.client, **)
           requests = 0
           counter = ->(*, payload) { requests += 1 if payload[:priority].to_s == "rerank" }
           run = ActiveSupport::Notifications.subscribed(counter, "truffler.jev_call") do
-            inline_jobs { model.jev_smart_search(query, tenant: tenant_key, scope: model.where(id: candidate_ids), user: USER, surface: nil) }
+            SmartSearch.start(model, query, tenant: tenant_key, scope: model.where(id: candidate_ids), user: USER, dispatch: dispatcher(client))
           end
-          return NotAvailable.new("U10 Smart runs exposing #buckets") unless run.respond_to?(:buckets)
 
           { requests: requests, buckets: bucket_by_id(run.buckets) }
         end
 
         private
 
-        def inline_jobs
-          previous = ActiveJob::Base.queue_adapter
-          ActiveJob::Base.queue_adapter = :inline
-          yield
-        ensure
-          ActiveJob::Base.queue_adapter = previous
+        def dispatcher(client)
+          reranker = SmartSearch::Reranker.new(client: client, budget: Unmetered.new)
+          dispatcher = SmartSearch::Dispatcher.new(budget: Unmetered.new, encodings: NoEncodings.new, deadline: 0,
+            enqueue: ->(run, index) { reranker.call(run, index) })
+          ->(run) { dispatcher.call(run) }
         end
 
         def bucket_by_id(buckets)

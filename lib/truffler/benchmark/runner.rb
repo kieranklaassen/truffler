@@ -283,7 +283,8 @@ module Truffler
       end
 
       def rerank(query, tenant, candidate_ids, depth)
-        @reranker.call(query: query, tenant_key: tenant, model: @model, candidate_ids: candidate_ids.first(depth), depth: depth, params: params)
+        @reranker.call(query: query, tenant_key: tenant, model: @model, candidate_ids: candidate_ids.first(depth), depth: depth, params: params,
+          client: @client)
       end
 
       def rerank_injection_check(depth)
