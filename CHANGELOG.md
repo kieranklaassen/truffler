@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.3]
+
+- Display-name and description words of an applied choice option now match query words exactly (ignoring case and plurals) instead of by shared three-letter prefix. Under a filter, ordinary search words such as "email", "inbox" and "summary" (with Cora applied) or "chat" and "change" (with billing applied) no longer become label terms and keep ranking results. Label keys and option keys still match by shared prefix, so "angry" names `anger`.
+
 ## [0.1.2]
 
 Fixes from happyhappy's production `churn_risk` backfill and its 0.1.1 upgrade.

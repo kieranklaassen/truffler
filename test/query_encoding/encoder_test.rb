@@ -301,8 +301,8 @@ class QueryEncodingEncoderTest < Truffler::TestCase
     encoding = Encoder.new.encode(prefetch(NamedOptionEmail, "cora assistants about the spiral writer invoices"))
 
     assert_equal({ "product:prod-a1" => 0.5 }, encoding.filters)
-    assert_equal %w[cora assistants spiral writer], encoding.label_term_tokens
-    assert_equal %w[invoices], encoding.keyword_tokens
+    assert_equal %w[cora assistants spiral], encoding.label_term_tokens
+    assert_equal %w[writer invoices], encoding.keyword_tokens
   end
 
   test "0.1.2: description words of an option the query does not apply stay keywords" do
@@ -330,5 +330,23 @@ class QueryEncodingEncoderTest < Truffler::TestCase
 
     assert_equal %w[urgently], encoding.label_term_tokens
     assert_includes encoding.keyword_tokens, "waiting"
+  end
+
+  test "0.1.3: description words match exactly, so near words stay search words under the filter" do
+    @fake.answer("intent__product", "filter").answer("option__product", "prod-a1")
+
+    encoding = Encoder.new.encode(prefetch(NamedOptionEmail, "emailing assistance inbox summary for cora"))
+
+    assert_equal %w[cora], encoding.label_term_tokens
+    assert_equal %w[emailing assistance inbox summary], encoding.keyword_tokens
+  end
+
+  test "0.1.3: a word sharing only a prefix with a display-name word stays a keyword ('portfolio' vs 'Billing portal')" do
+    @fake.answer("intent__product", "filter").answer("option__product", "prod-b2")
+
+    encoding = Encoder.new.encode(prefetch(NamedOptionEmail, "portal portfolio change"))
+
+    assert_equal %w[portal], encoding.label_term_tokens
+    assert_equal %w[portfolio change], encoding.keyword_tokens
   end
 end
