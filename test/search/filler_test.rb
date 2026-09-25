@@ -1,5 +1,21 @@
 require "test_helper"
 
+# A label key word ("customer") and an option search text ("text message")
+# that overlap the default filler words.
+class ChannelEmail < ActiveRecord::Base
+  self.table_name = "emails"
+  include Truffler::Model
+
+  truffler do
+    tenant :account_id
+    reads :subject
+    label :customer_reply, :noul, question: "Is this a reply from a customer?"
+    label :channel, :choice, question: "Which channel did this arrive on?",
+      options: { "sms" => { description: "Arrived as an SMS", search: "text message" }, "web" => "Arrived through the web form" }
+    keyword :subject
+  end
+end
+
 class SearchFillerTest < Truffler::TestCase
   include Truffler::Test::SearchHelpers
   include ActiveSupport::Testing::TimeHelpers
@@ -116,5 +132,70 @@ class SearchFillerTest < Truffler::TestCase
     encoding = encode("urgent messages")
 
     assert_equal %w[urgent], encoding.without([ "urgent" ]).keyword_tokens
+  end
+
+  CHANNEL_EMAIL = ChannelEmail
+
+  def encode_for(model, query)
+    query = Query.new(query)
+    key = Truffler::Search::EncodingCache.new.key(model, query, tenant_key: "1")
+    Truffler::QueryEncoding::Prefetch.new.call(model, query, cache_key: key, tenant_key: "1", user_key: "user-1")
+    Encoder.new.encode(key)
+  end
+
+  test "0.1.5: a word naming a declared label key or option search text is never filler, applied or not, cached or cold" do
+    texts = CHANNEL_EMAIL.create!(account_id: 1, subject: "Text messages about a refund")
+    CHANNEL_EMAIL.create!(account_id: 1, subject: "Refund issued")
+    customers = CHANNEL_EMAIL.create!(account_id: 1, subject: "Customers want a refund")
+
+    assert_equal [ texts.id ], search(CHANNEL_EMAIL, "messages refund").records.map(&:id)
+    assert_equal [ customers.id ], search(CHANNEL_EMAIL, "customers refund").records.map(&:id)
+    assert_equal %w[messages refund], encode_for(CHANNEL_EMAIL, "messages refund").keyword_tokens
+    assert_equal [ texts.id ], search(CHANNEL_EMAIL, "messages refund").records.map(&:id)
+    assert_equal %w[customers refund], encode_for(CHANNEL_EMAIL, "customers refund").keyword_tokens
+  end
+
+  test "0.1.5: a label vocabulary word Jev calls filler stays a keyword" do
+    @fake.answer("token__0", "filler")
+
+    assert_equal %w[messages refund], encode_for(CHANNEL_EMAIL, "messages refund").keyword_tokens
+    assert_equal %w[refund], encode_for(CHANNEL_EMAIL, "stuff refund").keyword_tokens
+  end
+
+  test "0.1.5: email and emails are no longer default filler words" do
+    assert_not_includes Truffler.config.filler_words, "email"
+    assert_not_includes Truffler.config.filler_words, "emails"
+    assert_equal %w[emails refund], Truffler::Search::Encoding.new.keywords(Query.new("emails refund"))
+  end
+
+  test "0.1.5: removing the last label chip keeps filler dropped while the time chip remains" do
+    @fake.answer("intent__urgent", "filter")
+    labeled = email_at("Refund issued", NOW - 1.day).tap { |email| label!(email, urgent: 0.9) }
+    this_week = email_at("Lunch plans", NOW - 1.day)
+    old = email_at("Messages piling up", NOW - 30.days)
+
+    encoding = encode("messages this week")
+    assert_empty encoding.keyword_tokens
+    assert_equal %w[messages], encoding.filler_tokens
+    assert_equal [ labeled.id ], search(InboxEmail, "messages this week").records.map(&:id)
+
+    unchipped = search(InboxEmail, "messages this week", suppressed: [ "urgent" ])
+    assert_equal [ labeled.id, this_week.id ].sort, unchipped.records.map(&:id).sort
+    assert_equal :time, unchipped.chips.sole[:kind]
+
+    both = search(InboxEmail, "messages this week", suppressed: %w[urgent time])
+    assert_equal [ old.id ], both.records.map(&:id)
+  end
+
+  test "0.1.5: removing a label chip frees its word, and filler stays dropped beside it, with or without time" do
+    @fake.answer("intent__urgent", "filter")
+    this_week = email_at("Urgent refund", NOW - 1.day)
+    old = email_at("Urgent refund", NOW - 30.days)
+
+    encode("urgent messages this week")
+
+    assert_equal [ this_week.id ], search(InboxEmail, "urgent messages this week", suppressed: [ "urgent" ]).records.map(&:id)
+    assert_equal [ this_week.id, old.id ].sort,
+      search(InboxEmail, "urgent messages this week", suppressed: %w[urgent time]).records.map(&:id).sort
   end
 end

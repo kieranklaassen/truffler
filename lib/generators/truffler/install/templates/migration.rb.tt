@@ -11,7 +11,7 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
     end
     add_index :truffler_labels, [:record_type, :record_id, :label_key], unique: true,
       name: "index_truffler_labels_on_record_and_label"
-    add_index :truffler_labels, [:record_type, :tenant_key, :label_key, :value],
+    add_index :truffler_labels, [:record_type, :tenant_key, :label_key, :value], include: [:record_id],
       name: "index_truffler_labels_for_search"
 
     create_table :truffler_record_states do |t|

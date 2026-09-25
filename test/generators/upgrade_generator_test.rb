@@ -129,7 +129,7 @@ class UpgradeGeneratorTest < Rails::Generators::TestCase
 
     run_generator
 
-    assert_equal 2, migration_files.size
+    assert_equal 3, migration_files.size
   end
 
   private
@@ -151,5 +151,33 @@ class UpgradeGeneratorTest < Rails::Generators::TestCase
     namespace = Module.new
     namespace.module_eval(File.read(path), path)
     namespace.const_get(constant)
+  end
+
+  test "0.1.5: the covering labels index step is skipped on SQLite" do
+    run_generator
+    assert_no_migration "db/migrate/cover_truffler_labels_for_search.rb"
+  end
+
+  test "0.1.5: on Postgres without the covering index, the step writes a migration that adds it once" do
+    skip "needs TRUFFLER_DATABASE_URL on Postgres" unless ActiveRecord::Base.connection.adapter_name.match?(/postg/i)
+
+    connection = ActiveRecord::Base.connection
+    connection.remove_index :truffler_labels, name: "index_truffler_labels_for_search", if_exists: true
+    connection.add_index :truffler_labels, [ :record_type, :tenant_key, :label_key, :value ], name: "index_truffler_labels_for_search"
+    Truffler::Generators::UpgradeGenerator.schema_connection = -> { connection }
+
+    run_generator
+    assert_migration "db/migrate/cover_truffler_labels_for_search.rb"
+    load Dir[File.join(destination_root, "db/migrate/*cover_truffler_labels_for_search.rb")].first
+    2.times { CoverTrufflerLabelsForSearch.new.exec_migration(connection, :up) }
+
+    assert connection.index_name_exists?(:truffler_labels, "index_truffler_labels_for_search_covering")
+    assert_not connection.index_name_exists?(:truffler_labels, "index_truffler_labels_for_search")
+  ensure
+    if connection&.adapter_name&.match?(/postg/i)
+      connection.remove_index :truffler_labels, name: "index_truffler_labels_for_search_covering", if_exists: true
+      connection.add_index :truffler_labels, [ :record_type, :tenant_key, :label_key, :value ], include: [ :record_id ],
+        name: "index_truffler_labels_for_search", if_not_exists: true
+    end
   end
 end

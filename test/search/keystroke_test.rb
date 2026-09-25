@@ -161,6 +161,8 @@ class SearchKeystrokeTest < Truffler::TestCase
     # Email shares the emails table, so InboxEmail sees this row as its second match.
     email = Email.create!(account_id: 1, subject: "Invoice")
     label!(email, needs_action: 0.9)
+    cache_encoding!(InboxEmail, "invoice", keyword_tokens: %w[invoice])
+    cache_encoding!(InboxEmail, "zebra", keyword_tokens: %w[zebra])
 
     assert_equal({ query: "Invoice", reason: :weak }, search(InboxEmail, "Invoice").invite_row)
     assert_equal({ query: "zebra", reason: :empty }, search(InboxEmail, "zebra").invite_row)
@@ -170,6 +172,51 @@ class SearchKeystrokeTest < Truffler::TestCase
     cached = search(Email, "act now")
     assert_equal [ email.id ], cached.records.map(&:id)
     assert_equal :weak, cached.invite_row[:reason]
+  end
+
+  test "0.1.5: covers AE10 with a keyword source: a first-time intent query invites Smart search while its encoding is pending" do
+    3.times { inbox_email!(subject: "Invoice from the landlord") }
+
+    pending = search(InboxEmail, "landlord invoice")
+    assert_equal :pending, pending.encoding_status
+    assert_equal({ query: "landlord invoice", reason: :encoding_pending }, pending.invite_row)
+    assert_not pending.local_weak?, "a strong keyword list stays strong for the backup provider"
+
+    cache_encoding!(InboxEmail, "landlord invoice", keyword_tokens: %w[landlord invoice])
+    assert_nil search(InboxEmail, "landlord invoice").invite_row
+  end
+
+  test "0.1.5: no pending invite row when no encoding is in flight" do
+    Truffler.config.encoding_prefetch = ->(*, **) { false }
+    3.times { inbox_email!(subject: "Invoice") }
+
+    result = search(InboxEmail, "invoice")
+
+    assert_equal :none, result.encoding_status
+    assert_nil result.invite_row
+  end
+
+  test "0.1.5: invite_on_pending_encoding false invites only on weak or empty results for a model with a keyword source" do
+    model = Class.new(ActiveRecord::Base) do
+      self.table_name = "emails"
+      def self.name = "QuietEmail"
+      include Truffler::Model
+
+      truffler do
+        tenant :account_id
+        reads :subject
+        label :urgent, :noul, question: "Is this email time-sensitive?"
+        keyword :subject
+        invite_on_pending_encoding false
+      end
+    end
+    3.times { model.create!(account_id: 1, subject: "Invoice") }
+
+    assert_equal true, InboxEmail.truffler_definition.invite_on_pending_encoding
+    assert_equal false, model.truffler_definition.invite_on_pending_encoding
+    assert_equal :pending, search(model, "invoice").encoding_status
+    assert_nil search(model, "invoice").invite_row
+    assert_equal :empty, search(model, "zebra").invite_row[:reason]
   end
 
   test "the declaration sets blend weights and the weak threshold" do
@@ -188,6 +235,7 @@ class SearchKeystrokeTest < Truffler::TestCase
       end
     end
     model.create!(account_id: 1, subject: "Invoice")
+    cache_encoding!(model, "invoice", keyword_tokens: %w[invoice])
 
     assert_equal({ label: 1.0, text: 0.25, keyword: 2.0, exact: 1.0, min_similarity: 0.0 }, model.truffler_definition.ranking)
     result = search(model, "invoice")
@@ -198,6 +246,7 @@ class SearchKeystrokeTest < Truffler::TestCase
 
   test "three or more results show no invite row" do
     3.times { inbox_email!(subject: "Invoice") }
+    cache_encoding!(InboxEmail, "invoice", keyword_tokens: %w[invoice])
 
     assert_nil search(InboxEmail, "invoice").invite_row
   end

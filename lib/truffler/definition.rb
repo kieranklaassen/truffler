@@ -144,6 +144,14 @@ module Truffler
       tenant_key if scoped? && Truffler.config.backfill_spend_cap_scope.to_sym == :tenant
     end
 
+    attr_writer :invite_on_pending_encoding
+
+    # Whether a model with a `keyword` source shows the Smart search row while
+    # the query's encoding is in flight (AE10). Default true.
+    def invite_on_pending_encoding
+      @invite_on_pending_encoding.nil? || @invite_on_pending_encoding
+    end
+
     private
 
     def table_available?
@@ -243,6 +251,10 @@ module Truffler
         raise DefinitionError, "index_scope must be callable with a relation" unless callable.respond_to?(:call)
 
         @definition.index_scope = callable
+      end
+
+      def invite_on_pending_encoding(enabled)
+        @definition.invite_on_pending_encoding = enabled ? true : false
       end
     end
   end

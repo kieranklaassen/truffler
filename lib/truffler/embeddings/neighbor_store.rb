@@ -2,9 +2,13 @@ module Truffler
   module Embeddings
     # Cosine distance computed by the database: pgvector's `<=>` on a vector
     # column, or sqlite-vec's `vec_distance_cosine` on float32 blobs (the
-    # host loads the extension). Because similarity is plain SQL, search can
-    # score text inline in its one query as an exact scan of the tenant's
-    # rows; an approximate (HNSW) index is an opt-in host migration.
+    # host loads the extension).
+    #
+    # On Postgres, search reads text similarity from the tenant's top `k`
+    # neighbors (`neighbors_sql`, one `ORDER BY embedding <=> q LIMIT k`
+    # that an HNSW index can serve), so records outside the top K score no
+    # text similarity. Pass `top_k: false` for an exact inline similarity per
+    # row, the sqlite-vec default; `top_k: true` uses the join there too.
     class NeighborStore < VectorStore
       TABLE = "truffler_embeddings".freeze
 
@@ -35,14 +39,29 @@ module Truffler
         end
       end
 
-      def initialize(dialect: nil)
+      attr_reader :k
+
+      def initialize(dialect: nil, k: DEFAULT_K, top_k: nil)
         @dialect = dialect
+        @k = Integer(k)
+        @top_k = top_k
       end
 
-      def nearest(model, tenant_key:, vector:, k: DEFAULT_K)
+      def nearest(model, tenant_key:, vector:, k: self.k)
         distance = distance_sql(model, "#{TABLE}.embedding", vector)
         embeddings(model, tenant_key, vector.size).order(Arel.sql(distance)).limit(k)
           .pluck(:record_id, Arel.sql("1 - #{distance}")).map { |id, similarity| [ id, similarity.to_f ] }
+      end
+
+      # The tenant's `k` nearest vectors as `(record_id, similarity)` rows,
+      # for search to LEFT JOIN on record_id; nil when this store scores
+      # inline instead.
+      def neighbors_sql(model, tenant_key:, vector:, k: self.k)
+        return unless top_k?(model)
+
+        distance = distance_sql(model, "#{TABLE}.embedding", vector)
+        embeddings(model, tenant_key, vector.size).reorder(Arel.sql(distance)).limit(k)
+          .select(Arel.sql("#{TABLE}.record_id AS record_id"), Arel.sql("1 - #{distance} AS similarity")).to_sql
       end
 
       def similarity_sql(model, tenant_key:, vector:, k: nil)
@@ -55,11 +74,18 @@ module Truffler
         true
       end
 
+      def top_k?(model)
+        @top_k.nil? ? dialect(model) == :postgres : @top_k
+      end
+
       private
 
-      def distance_sql(model, column_sql, vector)
+      def dialect(model)
         @dialect ||= self.class.dialect(model.connection)
-        self.class.distance_sql(@dialect, model.connection, column_sql, vector)
+      end
+
+      def distance_sql(model, column_sql, vector)
+        self.class.distance_sql(dialect(model), model.connection, column_sql, vector)
       end
     end
   end

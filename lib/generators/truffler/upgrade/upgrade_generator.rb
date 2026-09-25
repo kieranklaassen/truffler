@@ -27,7 +27,21 @@ module Truffler
         end
       end
 
+      # Postgres only: the 0.1.5 covering index that makes label-only ranking
+      # an index-only scan. Other databases and installs that already have it
+      # skip the step.
+      def create_labels_search_covering_migration
+        add_migration "labels_search_covering_migration.rb.tt", "cover_truffler_labels_for_search" do |connection|
+          !connection.adapter_name.match?(/postg/i) || labels_search_covered?(connection)
+        end
+      end
+
       private
+
+      def labels_search_covered?(connection)
+        connection.index_name_exists?(:truffler_labels, "index_truffler_labels_for_search_covering") ||
+          connection.select_value("SELECT indexdef FROM pg_indexes WHERE indexname = 'index_truffler_labels_for_search'").to_s.include?("INCLUDE")
+      end
 
       def add_migration(template, name, &applied)
         existing = self.class.migration_exists?(File.join(destination_root, db_migrate_path), name)

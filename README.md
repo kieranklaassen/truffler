@@ -88,6 +88,7 @@ class Email < ApplicationRecord
     surface :inbox, explicit_action: :enter     # :enter, :key, or :row
     ranking label: 1.0, text: 1.0, keyword: 0.5, exact: 1.0
     weak_below 3                                # fewer keystroke results than this counts as weak
+    invite_on_pending_encoding true             # Smart search row while a first-time query's encoding is in flight
   end
 end
 ```
@@ -98,9 +99,10 @@ Here is what each option does:
 - Choice `options:` may be a callable of the tenant key, which gives each tenant its own vocabulary. A tenant it gives no options (`{}` or nil) simply lacks the label: it is neither asked nor encoded there. The option name `truffler:none` is reserved (see `Truffler::NO_OPTION` below).
 - An option's value may be `{ description: "...", search: "..." }` instead of a plain description, e.g. `options: { "prod-a1" => { description: "Cora, the AI email assistant that drafts replies...", search: "Cora email assistant" } }`. Jev labels records with the description; query words are matched against the short search text (else the description), and the request state's `option_names` carries it. A per-tenant callable may return the same shape. Editing a search text never stales labels or triggers a backfill; it only changes the query-encoding cache key, so queries are re-encoded.
 - `watch :column, ...` relabels every label when one of those columns changes. Saving a record only relabels on columns that changed, so a `reads` field backed by a method (a conversation built from messages, say) needs the columns it is built from in `watch`.
-- `keyword` also accepts a single callable, `->(scope, tokens) { relation }`.
+- `keyword` also accepts a single callable, `->(scope, tokens) { relation }`. It, and each `exact` callable, may return an Array of ids instead of a relation, which is far faster on a large tenant (see [Keystroke search at scale](#keystroke-search-at-scale)).
 - `embeddings column: :my_vector` searches a vector column you maintain yourself. Truffler never writes it.
 - `embeddings` refuses to send encrypted fields to the embedding provider unless you pass `allow_encrypted: true`.
+- `invite_on_pending_encoding` (default true) shows the Smart search row with reason `:encoding_pending` while a query's first encoding is in flight, even when a `keyword` source matched. A model with no `keyword` source always does. Pass `false` to invite only on weak or empty results.
 
 `label key, type, **options` takes:
 
@@ -175,10 +177,16 @@ The default client is `Truffler::Clients::RubyLLMTypeSafe`. It needs ruby_llm 2 
 If you already have a TypeSafe client, wrap it in `Truffler::Clients::Callable`. The wrapped object must respond to `evaluate(state:, schema:)`, and may also accept `model:`. It returns either the answers hash or `{"answers" => ..., "model" => ..., "usage" => {"input_tokens" => ...}}`:
 
 ```ruby
-config.client = Truffler::Clients::Callable.new(TypeSafeClient.new)
+config.client = Truffler::Clients::Callable.new(MyJevClient.new)
 ```
 
 `schema:` holds the questions in TypeSafe wire shape. When a response carries no token count, Truffler estimates it from the request size and flags the estimate. Errors reach you as `Truffler::ClientError`, carrying only the HTTP status and the error class name.
+
+If your client takes a schema object (it calls `schema.questions`) and returns an evaluation object with `answers`, `model`, and `input_tokens` readers rather than a hash, use `Truffler::Clients::Evaluator` instead. For any other shape, subclass `Truffler::Clients::Base` and implement `perform` (see [docs/host-integration.md](docs/host-integration.md)).
+
+```ruby
+config.client = Truffler::Clients::Evaluator.new(TypeSafeClient.new)
+```
 
 ## Keystroke search
 
@@ -191,7 +199,7 @@ result = Email.truffler(params[:q], tenant: Current.account.id, scope: Current.a
 
 A keystroke search makes no network call. It reads the query encoding and query vector from the cache. When the cache misses, it enqueues `EncodeQueryJob`, and the next keystroke or reload picks up the result.
 
-Query encoding sends Jev the label vocabulary (each label's description and a choice label's option names) next to the query, and asks for each label whether the query filters on it, prefers it, or ignores it, plus the role of each word. A choice label's option question also offers `Truffler::NO_OPTION` (`"truffler:none"`), meaning the query names none of its options, so a host option literally called `none` stays filterable. Word roles are then checked locally: a word that names a label the query applies (its key, a word of its key, or the chosen option key, ignoring case and plurals or sharing their first three letters when both words have four letters or more, so "angry" names `anger`; or, matched exactly, a word of that option's display name or description) counts as naming the label, and common stopwords and `config.filler_words` (generic nouns such as "customers", "users", "emails") are dropped. They are kept only when dropping them would leave no keyword, no applied label, and no time phrase, so "customers in the last 3 hours" lists the window's records while a lone "customers" still searches text; the same rule applies before the encoding is cached. When the encoding applies a label filter, the filter decides which records match and keyword hits only rank them; without one, the remaining keywords must match.
+Query encoding sends Jev the label vocabulary (each label's description and a choice label's option names) next to the query, and asks for each label whether the query filters on it, prefers it, or ignores it, plus the role of each word. A choice label's option question also offers `Truffler::NO_OPTION` (`"truffler:none"`), meaning the query names none of its options, so a host option literally called `none` stays filterable. Word roles are then checked locally: a word that names a label the query applies (its key, a word of its key, or the chosen option key, ignoring case and plurals or sharing their first three letters when both words have four letters or more, so "angry" names `anger`; or, matched exactly, a word of that option's display name or description) counts as naming the label, and common stopwords and `config.filler_words` (generic nouns such as "customers", "users", "items") are dropped. A word that names any declared label (a word of its key, of an option key, or of an option's search text), applied or not, is never dropped as filler. Filler is kept only when dropping them would leave no keyword, no applied label, and no time phrase, so "customers in the last 3 hours" lists the window's records while a lone "customers" still searches text; the same rule applies before the encoding is cached. When the encoding applies a label filter, the filter decides which records match and keyword hits only rank them; without one, the remaining keywords must match.
 
 When the searcher removes a chip, the words that named only that label (or only labels that are now all removed) become keywords again, so removing the `urgent` chip from "urgent refunds" searches for both words. A word that named a label or option key only by shared prefix ("urgently" for `urgent`) also adds a small keyword score (a quarter of the keyword weight) while its label applies, ranking records whose text contains it higher without requiring it.
 
@@ -202,6 +210,7 @@ The returned `Truffler::Search::Result` exposes:
 - `records` and `ids`.
 - `chips`: `[{key:, label:, kind: :filter | :boost | :time, name:}]`.
 - `invite_row`: `{query:, reason: :weak | :empty | :encoding_pending}` or nil.
+- `local_weak?`: whether the list is too weak to stand alone (starts the backup provider). A pending encoding on a model with a `keyword` source invites Smart search without making the list weak.
 - `encoding_status`: `:cached`, `:pending`, or `:none`.
 - `watermark` and `new_matches_count`.
 - `explicit_action`: the surface's declared action.
@@ -213,6 +222,39 @@ For the "N new matches" row on a later request, pass the watermark back in:
 ```ruby
 Email.jev_new_matches_count(params[:q], tenant: account.id, scope: account.emails, user: current_user, since: Time.iso8601(params[:since]))
 ```
+
+### Keystroke search at scale
+
+The keystroke query is shaped so a large tenant (tens of thousands of records) stays fast on Postgres:
+
+- Return ids from `keyword` and `exact` callables when you can, e.g. `.limit(2_000).pluck(:id)` from a blind index. Ids become a literal `IN (...)` list. A returned relation is rendered as `id = ANY(ARRAY(subquery))` on Postgres (plain `IN (subquery)` elsewhere), so it runs once instead of as a hashed filter over every tenant row, but the id list is still faster.
+- Label-only and filtered searches, where every record past the tenant and filters is a candidate, read label scores from one grouped aggregate over `truffler_labels` joined on `record_id`, never a subquery per row. New installs get `index_truffler_labels_for_search` with `INCLUDE (record_id)`, which makes that aggregate an index-only scan. On an existing install, add it with a migration (Postgres 11+):
+
+  ```ruby
+  class CoverTrufflerLabelsForSearch < ActiveRecord::Migration[8.0]
+    disable_ddl_transaction!
+
+    def change
+      add_index :truffler_labels, [:record_type, :tenant_key, :label_key, :value], include: [:record_id],
+        name: "index_truffler_labels_for_search_covering", algorithm: :concurrently
+      remove_index :truffler_labels, [:record_type, :tenant_key, :label_key, :value], name: "index_truffler_labels_for_search",
+        algorithm: :concurrently
+    end
+  end
+  ```
+
+  It is optional: the grouped aggregate already replaces the per-row subquery, and the index only saves heap reads.
+- With embeddings on Postgres, text similarity comes from the tenant's top `k` neighbors (`ORDER BY embedding <=> q LIMIT k`), joined on `record_id`. An HNSW index on `truffler_embeddings.embedding` serves it. Records outside the top `k` score no text similarity; see `vector_store` under [Configuration](#configuration).
+- The plans these queries produce are costed high enough that Postgres JIT often compiles them, which can add 0.3 to 0.9 s to a query that runs in tens of milliseconds. Turn JIT off for the keystroke only:
+
+  ```ruby
+  result = Email.transaction do
+    Email.connection.execute("SET LOCAL jit = off")
+    Email.truffler(params[:q], tenant: account.id, scope: account.emails, user: current_user)
+  end
+  ```
+
+  `SET LOCAL` lasts until the transaction ends, so other queries keep JIT. `result.records` is loaded inside the block.
 
 ## Smart search and streaming
 
@@ -352,8 +394,8 @@ Set these in `Truffler.configure do |config| ... end`.
 | `resume_pending_after` | 5 minutes | How long before `ResumeJob` treats work as stuck. |
 | `embedder` | `Embeddings::RubyLLMEmbedder.new` | Any `Embeddings::Embedder` subclass. The default calls `RubyLLM.embed`, which works on ruby_llm 1.x and 2. |
 | `embedding_cost_per_million_tokens` | 0.02 | Embedding price. |
-| `vector_store` | `:auto` | `:neighbor` (pgvector `<=>`, or sqlite-vec `vec_distance_cosine` when you load the extension), `:ruby` (exact cosine in Ruby), or `:auto` (neighbor when available, otherwise Ruby). A model declaring `embeddings column:` always reads its own column. |
-| `filler_words` | `customer(s) people person user(s) message(s) email(s) item(s) stuff thing(s)` | Generic nouns never required as keywords on their own (matched ignoring plurals). Replace the list or extend it (`config.filler_words += %w[ticket]`). |
+| `vector_store` | `:auto` | `:neighbor` (pgvector `<=>`, or sqlite-vec `vec_distance_cosine` when you load the extension), `:ruby` (exact cosine in Ruby), or `:auto` (neighbor when available, otherwise Ruby). Or a store instance, e.g. `Truffler::Embeddings::NeighborStore.new(k: 500)` or your own `VectorStore` subclass. On Postgres the neighbor store scores text from the tenant's top `k` (default 200) neighbors; `NeighborStore.new(top_k: false)` scores every row exactly. A model declaring `embeddings column:` always reads its own column. |
+| `filler_words` | `customer(s) people person user(s) message(s) item(s) stuff thing(s)` | Generic nouns never required as keywords on their own (matched ignoring plurals). Replace the list or extend it (`config.filler_words += %w[ticket]`). |
 | `encoding_prefetch` | `QueryEncoding::Prefetch.new` | Cache-miss hook, called as `call(model, query, cache_key:, tenant_key:, user_key:)`. |
 | `encoding_deadline` | 1.0 | Seconds a Smart run waits for an in-flight query encoding. |
 | `rerank_depth`, `rerank_chunk_size`, `rerank_max_field_chars` | 30, 10, 1,200 | Candidates reranked, candidates per Jev request, characters per field sent. |
