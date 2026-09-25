@@ -1,0 +1,27 @@
+{"expected_ids":[1,10,13,19,28,31,34,37,49,52,55,58,64,67,70,73,88],"id":"intent-1-1","kind":"intent","query":"emails I need to reply to","tenant":"1"}
+{"expected_ids":[1,10,13,28,31,34,37,52,55,58,64,67,70],"id":"intent-1-2","kind":"intent","query":"anything urgent today","tenant":"1"}
+{"expected_ids":[1,4,55,61,79,82],"id":"intent-1-3","kind":"intent","query":"bills and receipts","tenant":"1"}
+{"expected_ids":[7,10,46,52,58,67],"id":"intent-1-4","kind":"intent","query":"upcoming trips","tenant":"1"}
+{"expected_ids":[25],"id":"intent-1-5","kind":"intent","query":"newsletters","tenant":"1"}
+{"expected_ids":[13,28,31,34,37,64,70],"id":"intent-1-6","kind":"intent","query":"work things waiting on me","tenant":"1"}
+{"expected_ids":[1],"id":"exact-1-1","kind":"exact_text","query":"INV-4004","tenant":"1"}
+{"expected_ids":[7],"id":"exact-1-2","kind":"exact_text","query":"VHGODS","tenant":"1"}
+{"expected_ids":[1,28,40,49,58,79],"id":"exact-1-3","kind":"exact_text","query":"kasia.eto@example.net","tenant":"1"}
+{"expected_ids":[2,11,14,20,29,32,44,47,50,59,62,65,68,77,83,86,89],"id":"intent-2-1","kind":"intent","query":"emails I need to reply to","tenant":"2"}
+{"expected_ids":[2,11,14,29,50,59,65,68,83,86,89],"id":"intent-2-2","kind":"intent","query":"anything urgent today","tenant":"2"}
+{"expected_ids":[2,5,29,41,47,68],"id":"intent-2-3","kind":"intent","query":"bills and receipts","tenant":"2"}
+{"expected_ids":[8,11,56,80,83,86],"id":"intent-2-4","kind":"intent","query":"upcoming trips","tenant":"2"}
+{"expected_ids":[26],"id":"intent-2-5","kind":"intent","query":"newsletters","tenant":"2"}
+{"expected_ids":[14,50,59,65,89],"id":"intent-2-6","kind":"intent","query":"work things waiting on me","tenant":"2"}
+{"expected_ids":[2],"id":"exact-2-1","kind":"exact_text","query":"INV-4006","tenant":"2"}
+{"expected_ids":[8],"id":"exact-2-2","kind":"exact_text","query":"EDBJTW","tenant":"2"}
+{"expected_ids":[2,5,23,26,38,62,65,71,74],"id":"exact-2-3","kind":"exact_text","query":"ana.ito@example.org","tenant":"2"}
+{"expected_ids":[3,12,15,21,30,39,45,54,60,69,72,75,87],"id":"intent-3-1","kind":"intent","query":"emails I need to reply to","tenant":"3"}
+{"expected_ids":[12,15,54,69,75,87],"id":"intent-3-2","kind":"intent","query":"anything urgent today","tenant":"3"}
+{"expected_ids":[3,6,36,51,57],"id":"intent-3-3","kind":"intent","query":"bills and receipts","tenant":"3"}
+{"expected_ids":[9,12,33,42,54,63,69,75,81],"id":"intent-3-4","kind":"intent","query":"upcoming trips","tenant":"3"}
+{"expected_ids":[27,78,90],"id":"intent-3-5","kind":"intent","query":"newsletters","tenant":"3"}
+{"expected_ids":[15,87],"id":"intent-3-6","kind":"intent","query":"work things waiting on me","tenant":"3"}
+{"expected_ids":[3],"id":"exact-3-1","kind":"exact_text","query":"INV-4011","tenant":"3"}
+{"expected_ids":[9],"id":"exact-3-2","kind":"exact_text","query":"BFIQQJ","tenant":"3"}
+{"expected_ids":[3,6,15,21,27,33,54],"id":"exact-3-3","kind":"exact_text","query":"kasia.costa@example.com","tenant":"3"}
