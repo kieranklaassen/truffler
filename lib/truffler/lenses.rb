@@ -37,6 +37,57 @@ module Truffler
       visible.order(:id).to_a
     end
 
+    # Active lenses whose questions records of one tenant are labeled with:
+    # app lenses, the tenant's lenses, and every user's personal lenses in
+    # that tenant. Personal answers are stored per record like any other,
+    # and only their owner's searches can see them.
+    def labeling_lenses(model, tenant_key:)
+      lenses = Lens.active.where(record_type: model.polymorphic_name)
+      lenses.where(scope_type: "app").or(lenses.where(scope_type: %w[tenant user], tenant_key: tenant_key&.to_s)).order(:id).to_a
+    end
+
+    # {"lens:<id>:<label>" => LensLabel} visible to one searcher, or with
+    # all_users: true, every label records of the tenant are labeled with.
+    def labels(model, tenant_key:, user_key: nil, all_users: false)
+      rows = active_rows(model, tenant_key)
+      unless all_users
+        personal = rows.select { |row| row["scope_type"] == "user" }
+        owner = digest(user_key) if personal.any? && user_key.present?
+        rows -= personal.reject { |row| owner && row["scope_key"] == owner }
+      end
+      rows.each_with_object({}) do |row, all|
+        row["questions"].each do |label, question|
+          lens_label = LensLabel.new(row["id"], label, question)
+          all[lens_label.key] = lens_label
+        end
+      end
+    end
+
+    ACTIVE_TTL = 1.minute
+
+    # The labeling lenses of one tenant from the cache store, so keystroke
+    # search computes its vocabulary version without a query (R12). Any lens
+    # change bumps a per-model generation; the TTL bounds staleness for
+    # per-process cache stores.
+    def active_rows(model, tenant_key)
+      cache = Truffler.config.cache_store
+      generation = cache.read(generation_key(model.polymorphic_name)) || "0"
+      key = "truffler/lenses/#{model.polymorphic_name}/#{generation}/#{Canonical.digest(tenant_key.to_s)}"
+      cache.fetch(key, expires_in: ACTIVE_TTL) do
+        labeling_lenses(model, tenant_key: tenant_key).map do |lens|
+          { "id" => lens.id, "scope_type" => lens.scope_type, "scope_key" => lens.scope_key, "questions" => lens.questions.to_h }
+        end
+      end
+    end
+
+    def changed!(record_type)
+      Truffler.config.cache_store.write(generation_key(record_type), SecureRandom.hex(8))
+    end
+
+    def generation_key(record_type)
+      "truffler/lenses/#{record_type}/generation"
+    end
+
     def visible(model, tenant_key:, user_key: nil)
       lenses = visible_lenses(model, tenant_key: tenant_key, user_key: user_key)
       questions = lenses.each_with_object({}) { |lens, all| all.merge!(lens.storage_questions) }

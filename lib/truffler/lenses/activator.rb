@@ -5,7 +5,7 @@ module Truffler
     # and fingerprint, which changes `Lenses.lens_fingerprints` for its scope
     # and so the scope's vocabulary version. Stored labels from the previous
     # version keep their old fingerprints: they keep serving searches and read
-    # as stale until relabeled.
+    # as stale until relabeled; LensBackfillJob relabels them.
     module Activator
       module_function
 
@@ -43,6 +43,7 @@ module Truffler
         end
         Instrumentation.instrument(:lens_activated, record_type: lens.record_type, tenant_key: lens.tenant_key,
           lens_id: lens.id, lens_version_id: version.id, question_count: version.questions.to_h.size)
+        Jobs::LensBackfillJob.perform_later(lens.id)
         lens
       end
     end

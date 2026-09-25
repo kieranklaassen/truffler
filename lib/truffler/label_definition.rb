@@ -50,6 +50,11 @@ module Truffler
       type == :choice ? options(tenant_key).keys.map { |option| "#{key}:#{option}" } : [ key ]
     end
 
+    # The label part of its Jev question id ("<tag>__<question_key>").
+    def question_key
+      key
+    end
+
     private
 
     def validate!

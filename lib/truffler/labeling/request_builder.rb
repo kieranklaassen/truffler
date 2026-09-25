@@ -15,8 +15,12 @@ module Truffler
       Request = Data.define(:state, :questions, :entries)
       Entry = Data.define(:record, :keys, :fields, :tokens)
 
-      def initialize(definition, tenant_key:, config: Truffler.config, max_field_chars: config.max_field_chars)
+      # labels: {key => label} to ask from, the declared labels by default;
+      # the labeler passes the scope's lens labels too.
+      def initialize(definition, tenant_key:, labels: definition.labels, config: Truffler.config,
+        max_field_chars: config.max_field_chars)
         @definition = definition
+        @labels = labels
         @tenant_key = tenant_key
         @config = config
         @max_field_chars = max_field_chars
@@ -71,13 +75,13 @@ module Truffler
           tag = Questions.tag("r", index)
           records[tag] = entry.fields
           entries[tag] = [ entry.record, entry.keys ]
-          entry.keys.each { |key| questions[Questions.tagged_id(tag, key)] = question(tag, key) }
+          entry.keys.each { |key| questions[Questions.tagged_id(tag, @labels.fetch(key).question_key)] = question(tag, key) }
         end
         Request.new(state: { "task" => TASK, "records" => records }, questions: questions, entries: entries)
       end
 
       def question(tag, key)
-        label = @definition.label(key)
+        label = @labels.fetch(key)
         label.question(@tenant_key).merge("instructions" => { "record" => tag, "question" => label.instructions })
       end
     end

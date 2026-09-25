@@ -122,7 +122,7 @@ module Truffler
       end
 
       def version_for(tenant_key)
-        @versions[tenant_key] ||= definition.vocabulary.version(tenant_key: tenant_key)
+        @versions[tenant_key] ||= definition.vocabulary.version(tenant_key: tenant_key, all_users: true)
       end
 
       def result(status, cursor)
@@ -131,8 +131,8 @@ module Truffler
       end
 
       # Returns the scanned ids (for the cursor) and the [id, tenant_key] rows
-      # that still need labels. Per-tenant vocabularies compare versions here
-      # because each tenant has its own.
+      # that still need labels. Per-tenant vocabularies (per-tenant choices or
+      # lenses) compare versions here because each tenant has its own.
       def page(cursor)
         pk = model.primary_key
         scope = model.joins(state_join).where(needs_labeling_sql)
@@ -156,7 +156,7 @@ module Truffler
       end
 
       def needs_labeling_sql
-        stale = if definition.per_tenant_vocabulary?
+        stale = if definition.per_tenant_vocabulary? || Lenses::Lens.active.for_model(model).exists?
           "#{STATES}.status = 'labeled'"
         else
           ActiveRecord::Base.sanitize_sql_array([

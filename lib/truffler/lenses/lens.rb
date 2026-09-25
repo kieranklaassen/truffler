@@ -27,6 +27,8 @@ module Truffler
       scope :proposed, -> { where(status: "proposed") }
       scope :for_model, ->(model) { where(record_type: model.polymorphic_name) }
 
+      after_commit { Lenses.changed!(record_type) }
+
       def self.build_from(draft, status:, origin: "user", creator_digest: nil, proposal_digest: nil)
         new(record_type: draft.model.polymorphic_name, scope_type: draft.scope.type.to_s, scope_key: draft.scope.scope_key,
           tenant_key: draft.scope.tenant_key, name: draft.name, description: draft.description, status: status,
@@ -37,7 +39,9 @@ module Truffler
       # Active lenses nobody has searched with for `after` stop applying
       # (R43). Their stored label rows stay until pruned.
       def self.expire_unused!(now: Time.current, after: Lenses.settings.expire_after)
-        active.where("COALESCE(last_used_at, updated_at) < ?", now - after).update_all(status: "expired", updated_at: now)
+        unused = active.where("COALESCE(last_used_at, updated_at) < ?", now - after)
+        record_types = unused.distinct.pluck(:record_type)
+        unused.update_all(status: "expired", updated_at: now).tap { record_types.each { |type| Lenses.changed!(type) } }
       end
 
       def model
@@ -55,6 +59,11 @@ module Truffler
       # {"lens:<id>:<label>" => wire-shape question} for the active version.
       def storage_questions
         questions.to_h.transform_keys { |label| Lenses.label_key(id, label) }
+      end
+
+      # {"lens:<id>:<label>" => LensLabel} for the active version.
+      def labels
+        questions.to_h.to_h { |label, question| [ Lenses.label_key(id, label), LensLabel.new(id, label, question) ] }
       end
 
       # The truffler_labels keys this lens writes: one per noul or score, one
