@@ -26,6 +26,15 @@ module Truffler
       Test::Database.clean
     end
 
+    def drain_jobs(limit: 20)
+      limit.times do
+        return if enqueued_jobs.empty?
+
+        perform_enqueued_jobs
+      end
+      flunk "jobs kept enqueuing after #{limit} rounds"
+    end
+
     def capture_notifications(pattern)
       payloads = []
       callback = ->(_name, _start, _finish, _id, payload) { payloads << payload }

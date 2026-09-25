@@ -7,6 +7,7 @@ module Truffler
   class IncompleteAnswers < Error; end
   class CassetteMiss < Error; end
   class BudgetExhausted < Error; end
+  class TenantMismatch < Error; end
 
   # Carries the HTTP status and the original error's class name only, never a
   # response body, which can echo record text back.
