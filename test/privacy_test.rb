@@ -50,6 +50,25 @@ class PrivacyTest < Truffler::TestCase
     assert_no_secret @log.string, "logs"
   end
 
+  test "a wrapped client error drops the provider error from its cause chain" do
+    Truffler.config.client.fail_with(Truffler::Test::HttpError.new(500, "echo: #{SECRET}"))
+
+    error = assert_raises(Truffler::ClientError) { Truffler.config.client.ask(state: {}, questions: { spam: "Spam?" }) }
+
+    assert_nil error.cause
+    assert_no_secret error.full_message, "error message"
+  end
+
+  test "a wrapped embedder error drops the provider error from its cause chain" do
+    embedder = Truffler::Embeddings::FakeEmbedder.new
+    embedder.fail_with(Truffler::Test::HttpError.new(500, "echo: #{SECRET}"))
+
+    error = assert_raises(Truffler::ClientError) { embedder.embed([ SECRET ], model: "fake", dimensions: 4) }
+
+    assert_nil error.cause
+    assert_no_secret error.full_message, "error message"
+  end
+
   private
 
   def truffler_tables

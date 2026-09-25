@@ -22,7 +22,7 @@ module Truffler
       rescue StandardError => error
         wrapped = ClientError.from(error)
         payload.merge!(error_class: wrapped.error_class, status: wrapped.status)
-        raise wrapped
+        raise wrapped, cause: nil
       ensure
         Instrumentation.instrument(:jev_call, payload.merge(latency_ms: Instrumentation.monotonic_ms - started))
       end
