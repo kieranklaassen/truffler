@@ -77,6 +77,23 @@ class BackfillJobTest < Truffler::TestCase
     assert job[:at], "the rescheduled job waits for budget"
   end
 
+  test "0.1.2: repeated denials reschedule with the backfill backoff, which resets once work lands" do
+    create_emails(4)
+    Truffler.config.batch_size = 2
+
+    freeze_time do
+      Truffler::Budget.stub(:new, deny_after(0)) { BackfillJob.perform_now("Email", denials: 2) }
+      stalled = enqueued_jobs.pop
+      assert_equal 3, ActiveJob::Arguments.deserialize(stalled[:args]).last[:denials]
+      assert_in_delta Time.current.to_f + 4.0, stalled[:at], 1e-3
+
+      Truffler::Budget.stub(:new, deny_after(1)) { BackfillJob.perform_now("Email", denials: 4) }
+      moving = enqueued_jobs.pop
+      assert_equal 1, ActiveJob::Arguments.deserialize(moving[:args]).last[:denials]
+      assert_in_delta Time.current.to_f + 1.0, moving[:at], 1e-3
+    end
+  end
+
   test "the rescheduled job finishes the backfill once budget returns" do
     create_emails(4)
     Truffler.config.batch_size = 2

@@ -7,7 +7,17 @@ module Truffler
   class LiveCallInTest < Error; end
   class IncompleteAnswers < Error; end
   class CassetteMiss < Error; end
-  class BudgetExhausted < Error; end
+
+  # Carries the budget's hint of how many seconds until a retry can succeed.
+  class BudgetExhausted < Error
+    attr_reader :retry_after
+
+    def initialize(message = nil, retry_after: nil)
+      @retry_after = retry_after
+      super(message)
+    end
+  end
+
   class TenantMismatch < Error; end
   class NotAuthorized < Error; end
   class InvalidLens < Error; end

@@ -50,7 +50,7 @@ module Truffler
             retry_failed_supplied(supplier.failed_ids, states_by_id)
             return Result.new(labeled: current.size, requests: index, cost: cost, demoted: true)
           end
-          raise BudgetExhausted, "no Jev budget for #{priority} labeling" if decision.denied?
+          raise BudgetExhausted.new("no Jev budget for #{priority} labeling", retry_after: decision.retry_after) if decision.denied?
 
           answers = client.ask(state: request.state, questions: request.questions, priority: decision.priority)
           cost += answers.usage&.cost.to_f

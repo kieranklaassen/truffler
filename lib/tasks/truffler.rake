@@ -17,12 +17,30 @@ namespace :truffler do
     end
   end
 
-  desc "Backfill stale, missing, and failed labels for a model (SPEND_CAP=dollars or none; default config.backfill_spend_cap)"
+  resolve_max_duration = lambda do |value|
+    next if value.to_s.strip.empty?
+
+    seconds = Float(value, exception: false)
+    abort "MAX_DURATION must be a number of seconds, got #{value.inspect}" unless seconds&.positive?
+    seconds
+  end
+
+  describe_cursor = ->(cursor) { cursor.nil? ? "none" : cursor }
+
+  desc "Backfill stale, missing, and failed labels for a model, waiting out budget denials " \
+    "(SPEND_CAP=dollars or none; default config.backfill_spend_cap; MAX_DURATION=seconds)"
   task :backfill, [ :model ] => :setup do |_, args|
     model = resolve_model.call(args[:model])
     spend_cap = resolve_spend_cap.call(ENV.fetch("SPEND_CAP", nil))
-    result = Truffler::Labeling::Backfill.new(model, spend_cap: spend_cap).run
-    puts "#{model.name}: #{result.status}, #{result.labeled} labeled in #{result.requests} requests, $#{format('%.6f', result.cost)}"
+    max_duration = resolve_max_duration.call(ENV.fetch("MAX_DURATION", nil))
+    progress = lambda do |so_far, delay|
+      puts "#{model.name}: waiting #{format('%.1f', delay)}s for backfill budget (#{so_far.labeled} labeled, " \
+        "$#{format('%.6f', so_far.cost)} spent, cursor #{describe_cursor.call(so_far.cursor)})"
+    end
+    result = Truffler::Labeling::Backfill.new(model, spend_cap: spend_cap).run(wait: true, max_duration: max_duration, progress: progress)
+    summary = "#{model.name}: #{result.status}, #{result.labeled} labeled in #{result.requests} requests, $#{format('%.6f', result.cost)}"
+    summary += ", cursor #{describe_cursor.call(result.cursor)}" if result.status == :paused
+    puts summary
   end
 
   desc "Print a model's labeling counts by status and staleness"

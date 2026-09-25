@@ -196,6 +196,110 @@ class BackfillTest < Truffler::TestCase
     assert_equal [ [ "pending", "backfill" ] ] * 2, State.where.not(record_id: newest_two).pluck(:status, :priority)
   end
 
+  # Advances only when the backfill sleeps, so waiting tests never sleep.
+  class FakeClock
+    attr_reader :now, :sleeps
+
+    def initialize
+      @now = 0.0
+      @sleeps = []
+    end
+
+    def call
+      now
+    end
+
+    def sleep(seconds)
+      @sleeps << seconds
+      @now += seconds
+    end
+  end
+
+  def scripted_budget(*outcomes)
+    budget = Truffler::Budget.new
+    decisions = outcomes.map do |outcome, retry_after|
+      Truffler::Budget::Decision.new(outcome: outcome, priority: :backfill, reason: (:exhausted if outcome == :denied),
+        retry_after: retry_after)
+    end
+    budget.define_singleton_method(:acquire) { |**| decisions.shift || Truffler::Budget::Decision.new(:granted, :backfill, nil) }
+    budget
+  end
+
+  def always_denied_budget
+    budget = Truffler::Budget.new
+    budget.define_singleton_method(:acquire) { |**| Truffler::Budget::Decision.new(:denied, :backfill, :exhausted) }
+    budget
+  end
+
+  test "0.1.2: waiting mode backs off on budget denials and resumes from the same cursor until complete" do
+    create_emails(4)
+    State.delete_all
+    clock = FakeClock.new
+    budget = scripted_budget([ :granted ], [ :denied ], [ :denied ], [ :denied ])
+
+    result = Backfill.new(Email, batch_size: 2, page_size: 2, budget: budget)
+      .run(wait: true, sleeper: clock.method(:sleep), clock: clock)
+
+    assert_equal [ :complete, 4, 2, nil ], [ result.status, result.labeled, result.requests, result.cursor ]
+    assert_equal [ 1.0, 2.0, 4.0 ], clock.sleeps
+    assert_equal [ "labeled" ] * 4, State.pluck(:status)
+    assert_equal 2, @fake.calls.size
+  end
+
+  test "0.1.2: backoff starts at 1 s, doubles, caps at 30 s, and honors a longer retry hint" do
+    assert_equal [ 1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0 ], (0..6).map { |denials| Backfill.backoff(denials) }
+    assert_equal 5.0, Backfill.backoff(0, 5.0)
+    assert_equal 4.0, Backfill.backoff(2, 0.2)
+  end
+
+  test "0.1.2: waiting mode waits at least the budget's retry hint" do
+    create_emails(2)
+    State.delete_all
+    clock = FakeClock.new
+
+    result = Backfill.new(Email, batch_size: 2, budget: scripted_budget([ :denied, 3.0 ]))
+      .run(wait: true, sleeper: clock.method(:sleep), clock: clock)
+
+    assert_equal :complete, result.status
+    assert_equal [ 3.0 ], clock.sleeps
+  end
+
+  test "0.1.2: max_duration stops a waiting backfill with :paused and the cursor to resume from" do
+    emails = create_emails(4)
+    State.delete_all
+    clock = FakeClock.new
+    budget = scripted_budget([ :granted ], *Array.new(10) { [ :denied ] })
+
+    result = Backfill.new(Email, batch_size: 2, page_size: 2, budget: budget)
+      .run(wait: true, max_duration: 10, sleeper: clock.method(:sleep), clock: clock)
+
+    assert_equal [ :paused, emails[2].id, 2 ], [ result.status, result.cursor, result.labeled ]
+    assert_equal [ 1.0, 2.0, 4.0 ], clock.sleeps
+    assert_equal [ [ "pending", "backfill" ] ] * 2, State.where(record_id: emails.first(2).map(&:id)).pluck(:status, :priority)
+  end
+
+  test "0.1.2: waiting mode reports progress before each wait without record text" do
+    create_emails(2)
+    State.delete_all
+    clock = FakeClock.new
+    reports = []
+
+    Backfill.new(Email, batch_size: 2, budget: scripted_budget([ :denied ]))
+      .run(wait: true, sleeper: clock.method(:sleep), clock: clock, progress: ->(result, delay) { reports << [ result, delay ] })
+
+    assert_equal 1, reports.size
+    result, delay = reports.sole
+    assert_equal [ :budget_denied, 0, 1.0 ], [ result.status, result.labeled, delay ]
+    assert_equal %i[status labeled requests cost cursor retry_after], result.to_h.keys
+  end
+
+  test "0.1.2: without wait a denial still ends the run with :budget_denied" do
+    create_emails(2)
+    State.delete_all
+
+    assert_equal :budget_denied, Backfill.new(Email, budget: always_denied_budget).run.status
+  end
+
   test "resumes below a cursor" do
     emails = create_emails(4)
     State.delete_all
