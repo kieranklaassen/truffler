@@ -155,12 +155,12 @@ module Truffler
         cache.write_vector(model, query, vector, tenant_key: tenant_key)
       end
 
-      # The label's storage key the query names, or nil for a choice label
-      # whose option answer is `none`.
       def labels(model, tenant_key, user_key)
         model.truffler_definition.vocabulary.labels_for(tenant_key: tenant_key, user_key: user_key)
       end
 
+      # The label's storage key the query names, or nil for a choice label
+      # whose option answer is `none`.
       def storage_key(label, answers, tenant_key)
         return label.key unless label.type == :choice
 
@@ -174,7 +174,7 @@ module Truffler
 
       def instrument(model, tenant_key, started, **payload)
         Instrumentation.instrument("encode", { record_type: model.polymorphic_name, tenant_key: tenant_key,
-          latency_ms: (Instrumentation.monotonic_ms - started).round(2) }.merge(payload))
+          latency_ms: Instrumentation.elapsed_ms(started) }.merge(payload))
       end
     end
   end

@@ -128,17 +128,11 @@ module Truffler
     # Descriptions on encrypted models follow the miss-log rules (R29, R44):
     # AR-encryption ciphertext when it is configured, nothing otherwise.
     def seal(model, text)
-      return text if text.nil? || !Misses.encrypted_model?(model)
-
-      ActiveRecord::Encryption.encryptor.encrypt(text) if Misses.encryption_configured?
+      Misses.seal(model, text)
     end
 
     def unseal(model, stored)
-      return stored if stored.nil? || !Misses.encrypted_model?(model)
-
-      ActiveRecord::Encryption.encryptor.decrypt(stored)
-    rescue ActiveRecord::Encryption::Errors::Base
-      nil
+      Misses.unseal(model, stored)
     end
   end
 end

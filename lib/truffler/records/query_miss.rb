@@ -13,12 +13,7 @@ module Truffler
       # The normalized query, decrypted on encrypted models; nil when no text
       # was stored or it can no longer be decrypted.
       def query
-        return if query_text.nil?
-        return query_text unless Misses.encrypted_model?(record_type.safe_constantize)
-
-        ActiveRecord::Encryption.encryptor.decrypt(query_text)
-      rescue ActiveRecord::Encryption::Errors::Base
-        nil
+        Misses.unseal(record_type.safe_constantize, query_text)
       end
     end
   end

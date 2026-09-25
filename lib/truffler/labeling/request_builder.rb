@@ -41,9 +41,7 @@ module Truffler
       end
 
       def entry(record, keys)
-        fields = @definition.field_values(record).transform_values do |value|
-          value.is_a?(String) ? value[0, @max_field_chars] : value.as_json
-        end
+        fields = @definition.request_fields(record, max_chars: @max_field_chars)
         tokens = Tokens.estimate(fields) + keys.sum { |key| Tokens.estimate(question("r000", key)) + QUESTION_OVERHEAD_TOKENS }
         Entry.new(record: record, keys: keys, fields: fields, tokens: tokens)
       end

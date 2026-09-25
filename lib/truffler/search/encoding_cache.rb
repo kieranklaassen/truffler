@@ -29,37 +29,33 @@ module Truffler
       end
 
       def read(model, query, tenant_key:, user_key: nil)
-        query = cast(query)
+        query = Query.wrap(query)
         Encoding.load(@store.read(key(model, query, tenant_key: tenant_key, user_key: user_key)), query)
       end
 
       def write(model, query, encoding, tenant_key:, user_key: nil, expires_in: TTL)
-        query = cast(query)
+        query = Query.wrap(query)
         @store.write(key(model, query, tenant_key: tenant_key, user_key: user_key), encoding.dump(query), expires_in: expires_in)
       end
 
       def read_vector(model, query, tenant_key:)
-        @store.read(vector_key(model, cast(query), tenant_key: tenant_key))&.map(&:to_f)
+        @store.read(vector_key(model, Query.wrap(query), tenant_key: tenant_key))&.map(&:to_f)
       end
 
       def write_vector(model, query, vector, tenant_key:, expires_in: TTL)
-        @store.write(vector_key(model, cast(query), tenant_key: tenant_key), vector.map(&:to_f), expires_in: expires_in)
+        @store.write(vector_key(model, Query.wrap(query), tenant_key: tenant_key), vector.map(&:to_f), expires_in: expires_in)
       end
 
       def prefetch(model, query, tenant_key:, user_key:)
         hook = Truffler.config.encoding_prefetch
         return false unless hook
 
-        query = cast(query)
+        query = Query.wrap(query)
         hook.call(model, query, cache_key: key(model, query, tenant_key: tenant_key, user_key: user_key), tenant_key: tenant_key,
           user_key: user_key).present?
       end
 
       private
-
-      def cast(query)
-        query.is_a?(Query) ? query : Query.new(query)
-      end
 
       def digest(model, query, tenant_key, user_key)
         definition = model.truffler_definition

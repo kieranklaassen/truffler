@@ -60,7 +60,7 @@ module Truffler
         Instrumentation.instrument("provider_search", run_id: @run.id.to_s, record_type: @run.model.polymorphic_name,
           tenant_key: @tenant_key, user_key: @user_key, section: SECTION.to_s, status: state[:status],
           reason: state[:reason], result_count: Array(state[:results]).size, error_class: state[:error_class],
-          latency_ms: (Instrumentation.monotonic_ms - started).round(2))
+          latency_ms: Instrumentation.elapsed_ms(started))
       end
     end
   end

@@ -40,7 +40,7 @@ module Truffler
         tags = {}
         records.each_with_index do |record, position|
           tag = Questions.tag("c", position + 1)
-          candidates[tag] = fields(definition, record)
+          candidates[tag] = definition.request_fields(record, max_chars: @config.rerank_max_field_chars)
           tags[tag] = record.id
           questions.noul(Questions.tagged_id(tag, LABEL), instructions: { "candidate" => tag, "question" => QUESTION }, criteria: CRITERIA)
         end
@@ -95,16 +95,10 @@ module Truffler
         raise TenantMismatch, "a rerank request holds candidates from exactly one tenant" if mixed.any?
       end
 
-      def fields(definition, record)
-        definition.field_values(record).transform_values do |value|
-          value.is_a?(String) ? value[0, @config.rerank_max_field_chars] : value.as_json
-        end
-      end
-
       def instrument(run, index, outcome, started)
         Instrumentation.instrument(:rerank, run_id: run.id, record_type: run.record_type, tenant_key: run.tenant_key,
           candidate_count: Array(run.chunk_ids(index)).size, outcome: outcome,
-          latency_ms: (Instrumentation.monotonic_ms - started).round(2))
+          latency_ms: Instrumentation.elapsed_ms(started))
       end
     end
   end

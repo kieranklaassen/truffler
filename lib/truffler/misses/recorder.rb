@@ -14,7 +14,7 @@ module Truffler
           tenant_key: tenant_key&.to_s,
           query_digest: Misses.digest(:query, normalized),
           user_digest: (Misses.digest(:user, user_key) if user_key.present?),
-          query_text: stored_text(model, normalized)
+          query_text: Misses.seal(model, normalized)
         )
         Instrumentation.instrument("miss", record_type: miss.record_type, tenant_key: miss.tenant_key, outcome: "recorded")
         miss
@@ -24,14 +24,6 @@ module Truffler
         nil
       end
       alias_method :record, :call
-
-      private
-
-      def stored_text(model, normalized)
-        return normalized unless Misses.encrypted_model?(model)
-
-        ActiveRecord::Encryption.encryptor.encrypt(normalized) if Misses.encryption_configured?
-      end
     end
   end
 end

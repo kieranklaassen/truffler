@@ -6,7 +6,7 @@ module Truffler
     class Backup
       def initialize(run, query:, tenant_key:, user_key:, local_result: nil)
         @run = run
-        @query = query.is_a?(Search::Query) ? query : Search::Query.new(query)
+        @query = Search::Query.wrap(query)
         @tenant_key = tenant_key&.to_s
         @user_key = user_key&.to_s
         @local_result = local_result

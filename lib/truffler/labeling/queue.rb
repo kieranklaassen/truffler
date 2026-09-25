@@ -51,6 +51,24 @@ module Truffler
         Records::RecordState.where(id: ids, status: "labeling", claimed_at: now).order(:id).to_a
       end
 
+      # Claims ids for a backfill run at backfill priority, inserting missing
+      # state rows. Live pending and in-flight rows belong to the flush job
+      # and are left alone.
+      def claim_backfill(ids, tenant_key)
+        now = Time.current
+        Records::RecordState.insert_all(
+          ids.map do |id|
+            { record_type: record_type, record_id: id, tenant_key: tenant_key, status: "pending", priority: "backfill",
+              attempts: 0, created_at: now, updated_at: now }
+          end,
+          unique_by: %i[record_type record_id]
+        )
+        chunk = states.where(record_id: ids)
+        chunk.where(status: %w[labeled failed]).or(chunk.where(status: "pending", priority: "backfill"))
+          .update_all(status: "labeling", priority: "backfill", tenant_key: tenant_key, claimed_at: now, updated_at: now)
+        chunk.where(status: "labeling", claimed_at: now).order(:id).to_a
+      end
+
       def pending?(tenant_key, priority:)
         states.exists?(tenant_key: tenant_key, status: "pending", priority: priority.to_s)
       end

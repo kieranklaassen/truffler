@@ -172,7 +172,7 @@ module Truffler
       # stops the run; claimed rows that were not labeled go back to pending
       # at backfill priority.
       def label(ids, tenant_key)
-        claimed = claim(ids, tenant_key)
+        claimed = queue.claim_backfill(ids, tenant_key)
         return if claimed.empty?
 
         begin
@@ -187,21 +187,6 @@ module Truffler
           @labeled += Records::RecordState.where(id: claimed.map(&:id), status: "labeled").count
         end
         nil
-      end
-
-      def claim(ids, tenant_key)
-        now = Time.current
-        Records::RecordState.insert_all(
-          ids.map do |id|
-            { record_type: record_type, record_id: id, tenant_key: tenant_key, status: "pending", priority: "backfill",
-              attempts: 0, created_at: now, updated_at: now }
-          end,
-          unique_by: %i[record_type record_id]
-        )
-        chunk = states.where(record_id: ids)
-        chunk.where(status: %w[labeled failed]).or(chunk.where(status: "pending", priority: "backfill"))
-          .update_all(status: "labeling", priority: "backfill", tenant_key: tenant_key, claimed_at: now, updated_at: now)
-        chunk.where(status: "labeling", claimed_at: now).order(:id).to_a
       end
     end
   end

@@ -12,6 +12,10 @@ module Truffler
 
       attr_reader :raw, :normalized, :tokens, :exact_tokens
 
+      def self.wrap(query)
+        query.is_a?(self) ? query : new(query)
+      end
+
       def self.normalize(text)
         text.to_s.unicode_normalize(:nfkc).downcase.squish
       end

@@ -51,6 +51,18 @@ module Truffler
       fields.index_with { |field| record.public_send(field) }
     end
 
+    # Field values as Jev request state: strings cut to max_chars so one long
+    # record cannot crowd out a batch, everything else as JSON.
+    def request_fields(record, max_chars:)
+      field_values(record).transform_values { |value| value.is_a?(String) ? value[0, max_chars] : value.as_json }
+    end
+
+    # Newest first: by arrival when the table has that column, then by primary key.
+    def arrival_order
+      order = model.column_names.include?(arrived_at_column) ? { arrived_at_column => :desc } : {}
+      order.merge(model.primary_key => :desc)
+    end
+
     def encrypted_fields
       Array(model.try(:encrypted_attributes)).map(&:to_s) & fields
     end

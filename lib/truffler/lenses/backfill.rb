@@ -73,12 +73,7 @@ module Truffler
         scope = model.all
         scope = scope.where(definition.tenant_column => lens.tenant_key) if definition.scoped? && lens.tenant_key
         scope = scope.where.not(pk => attempted) if attempted.any?
-        scope.where(Arel.sql(stale_sql)).reorder(order).limit(batch_size).to_a
-      end
-
-      def order
-        arrived = definition.arrived_at_column
-        (model.column_names.include?(arrived) ? { arrived => :desc } : {}).merge(model.primary_key => :desc)
+        scope.where(Arel.sql(stale_sql)).reorder(definition.arrival_order).limit(batch_size).to_a
       end
 
       def stale_sql
@@ -96,7 +91,7 @@ module Truffler
       # Labels one tenant's records through the labeler, which asks only
       # their stale questions. Returns nil, or the status that stops the run.
       def label(records, tenant_key)
-        claimed = claim(records.map(&:id), tenant_key)
+        claimed = queue.claim_backfill(records.map(&:id), tenant_key)
         return if claimed.empty?
 
         begin
@@ -111,24 +106,6 @@ module Truffler
           @labeled += Records::RecordState.where(id: claimed.map(&:id), status: "labeled").count
         end
         nil
-      end
-
-      # Live pending and in-flight records belong to the flush job and are
-      # left alone.
-      def claim(ids, tenant_key)
-        now = Time.current
-        record_type = model.polymorphic_name
-        Records::RecordState.insert_all(
-          ids.map do |id|
-            { record_type: record_type, record_id: id, tenant_key: tenant_key, status: "pending", priority: "backfill",
-              attempts: 0, created_at: now, updated_at: now }
-          end,
-          unique_by: %i[record_type record_id]
-        )
-        chunk = Records::RecordState.for_model(model).where(record_id: ids)
-        chunk.where(status: %w[labeled failed]).or(chunk.where(status: "pending", priority: "backfill"))
-          .update_all(status: "labeling", priority: "backfill", tenant_key: tenant_key, claimed_at: now, updated_at: now)
-        chunk.where(status: "labeling", claimed_at: now).order(:id).to_a
       end
     end
   end

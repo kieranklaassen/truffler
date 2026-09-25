@@ -41,7 +41,7 @@ module Truffler
     end
 
     def normalize(query)
-      query.to_s.unicode_normalize(:nfkc).downcase.squish
+      Search::Query.normalize(query)
     end
 
     def digest(purpose, value)
@@ -55,6 +55,22 @@ module Truffler
     def encryption_configured?
       config = ActiveRecord::Encryption.config
       config.has_primary_key? && config.has_key_derivation_salt?
+    end
+
+    # Text stored about an encrypted model is AR-encryption ciphertext when
+    # that is configured, and nothing otherwise (R29).
+    def seal(model, text)
+      return text if text.nil? || !encrypted_model?(model)
+
+      ActiveRecord::Encryption.encryptor.encrypt(text) if encryption_configured?
+    end
+
+    def unseal(model, stored)
+      return stored if stored.nil? || !encrypted_model?(model)
+
+      ActiveRecord::Encryption.encryptor.decrypt(stored)
+    rescue ActiveRecord::Encryption::Errors::Base
+      nil
     end
 
     def resolve(record_type)

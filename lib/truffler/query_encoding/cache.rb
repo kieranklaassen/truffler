@@ -49,9 +49,8 @@ module Truffler
         encrypted = Misses.encrypted_model?(model)
         return false if encrypted && !Misses.encryption_configured?
 
-        text = encrypted ? ActiveRecord::Encryption.encryptor.encrypt(query.normalized) : query.normalized
         @store.write(payload_key(cache_key), { "record_type" => model.polymorphic_name, "tenant_key" => tenant_key,
-          "user_key" => user_key, "query" => text, "encrypted" => encrypted }, expires_in: expires_in)
+          "user_key" => user_key, "query" => Misses.seal(model, query.normalized), "encrypted" => encrypted }, expires_in: expires_in)
         true
       end
 

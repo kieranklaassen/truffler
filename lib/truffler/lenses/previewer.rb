@@ -42,14 +42,15 @@ module Truffler
         return empty_preview(draft, scope, tenant_key, records) if records.empty? || draft.questions.empty?
 
         state, questions, tags = build(draft, records)
-        check_cap!(draft, config.cost_for(Tokens.estimate({ state: state, questions: questions })))
+        request_tokens = Tokens.estimate({ state: state, questions: questions })
+        check_cap!(draft, config.cost_for(request_tokens))
         decision = budget.acquire(priority: :encode, user_key: (config.lenses.key_for(by) if by))
         raise BudgetExhausted, "no Jev budget for a lens preview" unless decision.granted?
 
         answers = client.ask(state: state, questions: questions, priority: :encode)
         cost = answers.usage&.cost.to_f
         draft.lens&.record_spend!(cost)
-        summarize(draft, scope, tenant_key, tags, answers, Tokens.estimate({ state: state, questions: questions }), cost)
+        summarize(draft, scope, tenant_key, tags, answers, request_tokens, cost)
       end
 
       def compare(draft, active, sample: config.lenses.sample_size, tenant_key: nil, relation: nil, by: nil)
@@ -82,7 +83,7 @@ module Truffler
         tenant_key ||= draft.scope.tenant_key
         return tenant_key&.to_s if tenant_key || !definition(draft).scoped?
 
-        scope.reorder(order_for(draft)).pick(definition(draft).tenant_column)&.to_s
+        scope.reorder(definition(draft).arrival_order).pick(definition(draft).tenant_column)&.to_s
       end
 
       def in_tenant(draft, scope, tenant_key)
@@ -94,14 +95,7 @@ module Truffler
         records = in_tenant(draft, scope, tenant_key)
         records = records.where(model.primary_key => ids) if ids
         per_request = [ config.max_questions_per_request / [ draft.questions.size, 1 ].max, 1 ].max
-        records.reorder(order_for(draft)).limit([ ids&.size || sample, per_request ].min).to_a
-      end
-
-      def order_for(draft)
-        model = draft.model
-        arrived = definition(draft).arrived_at_column
-        order = model.column_names.include?(arrived) ? { arrived => :desc } : {}
-        order.merge(model.primary_key => :desc)
+        records.reorder(definition(draft).arrival_order).limit([ ids&.size || sample, per_request ].min).to_a
       end
 
       def build(draft, records)
@@ -111,9 +105,7 @@ module Truffler
         used = Tokens.estimate(Labeling::RequestBuilder::TASK)
         records.each.with_index(1) do |record, index|
           tag = Questions.tag("r", index)
-          fields = definition(draft).field_values(record).transform_values do |value|
-            value.is_a?(String) ? value[0, config.max_field_chars] : value.as_json
-          end
+          fields = definition(draft).request_fields(record, max_chars: config.max_field_chars)
           asked = draft.questions.to_h do |label, question|
             [ Questions.tagged_id(tag, label), question.merge("instructions" => { "record" => tag, "question" => question["instructions"] }) ]
           end

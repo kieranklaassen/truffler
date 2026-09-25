@@ -14,7 +14,7 @@ module Truffler
       def initialize(model, query, tenant:, scope:, user:, surface: nil, suppressed: [], store: Store.new, config: Truffler.config,
         dispatch: ->(run) { Jobs::SmartSearchJob.perform_later(run.id) })
         @model = model
-        @query = query.is_a?(Search::Query) ? query : Search::Query.new(query)
+        @query = Search::Query.wrap(query)
         @tenant = tenant
         @scope = scope
         @user = user

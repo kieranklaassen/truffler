@@ -13,7 +13,7 @@ module Truffler
         cache: EncodingCache.new)
         @model = model
         @definition = model.try(:truffler_definition) || raise(DefinitionError, "#{model.name} has no truffler declaration")
-        @query = query.is_a?(Query) ? query : Query.new(query)
+        @query = Query.wrap(query)
         @tenant_key = tenant&.to_s
         @scope = scope.nil? && !@definition.scoped? ? model.all : scope
         @user_key = self.class.user_key(user)
@@ -140,7 +140,7 @@ module Truffler
         payload = { record_type: model.polymorphic_name, tenant_key: tenant_key, surface: surface, outcome: result.encoding_status,
           result_count: result.records.size, filter_count: result.encoding&.filters&.size.to_i,
           boost_count: result.encoding&.intent_vector&.size.to_i, sources: result.sources.map(&:to_s),
-          reason: result.invite_row&.dig(:reason), latency_ms: (Instrumentation.monotonic_ms - started).round(2) }
+          reason: result.invite_row&.dig(:reason), latency_ms: Instrumentation.elapsed_ms(started) }
         payload[:query_digest] = Misses.digest(:query, query.normalized) if Misses.encrypted_model?(model)
         Instrumentation.instrument("search", payload)
       end
