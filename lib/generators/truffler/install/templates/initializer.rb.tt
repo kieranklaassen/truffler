@@ -15,4 +15,9 @@ Truffler.configure do |config|
   # config.batch_size = 10
   # config.grouping_window = 0
   # config.queue_name = :default
+
+  # Embeddings, for models that declare `embeddings`. :auto uses pgvector or
+  # sqlite-vec when available and exact cosine in Ruby otherwise.
+  # config.vector_store = :auto
+  # config.embedder = Truffler::Embeddings::RubyLLMEmbedder.new
 end

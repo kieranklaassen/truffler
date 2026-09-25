@@ -19,6 +19,7 @@ module Truffler
       Truffler.configure do |config|
         config.client = Test::LiveCallGuard.new
         config.cache_store = ActiveSupport::Cache::MemoryStore.new
+        config.embedder = Test::EmbedderGuard.new
       end
     end
 

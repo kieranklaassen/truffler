@@ -30,6 +30,7 @@ module Truffler
         pending = records.map { |record| [ record, stale_keys(stored[record.id.to_s].to_h, fingerprints, tenant_key) ] }
         current, pending = pending.partition { |_, keys| keys.empty? }
         Records::RecordState.mark_labeled(current.map { |record, _| states_by_id[record.id.to_s].id }, version: version)
+        Embeddings::LabelVector.new(model).write(current.map { |record, _| record.id }, tenant_key: tenant_key)
 
         requests = RequestBuilder.new(definition, tenant_key: tenant_key).build(pending)
         cost = 0.0
@@ -99,6 +100,7 @@ module Truffler
             keys.each { |key| Records::Label.where(record_type: record_type, record_id: record.id).for_label(key).delete_all }
           end
           Records::Label.insert_all!(rows) if rows.any?
+          Embeddings::LabelVector.new(model).write(request.entries.values.map { |record, _| record.id }, tenant_key: tenant_key)
           ids = request.entries.values.map { |record, _| states_by_id[record.id.to_s].id }
           Records::RecordState.mark_labeled(ids, version: version)
         end

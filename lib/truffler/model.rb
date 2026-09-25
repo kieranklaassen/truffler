@@ -24,6 +24,7 @@ module Truffler
       def install_truffler_callbacks
         after_commit :truffler_enqueue_labeling, on: %i[create update]
         after_commit :truffler_forget, on: :destroy
+        after_commit :truffler_enqueue_embedding, on: %i[create update]
       end
     end
 
@@ -39,6 +40,14 @@ module Truffler
 
     def truffler_forget
       Labeling::Queue.new(self.class).forget(self)
+    end
+
+    def truffler_enqueue_embedding
+      definition = self.class.truffler_definition
+      return unless Embeddings.managed?(definition)
+      return unless previously_new_record? || saved_changes.keys.intersect?([ *definition.fields, definition.tenant_column ].compact)
+
+      Jobs::EmbedJob.perform_later(self.class.polymorphic_name, id)
     end
   end
 end

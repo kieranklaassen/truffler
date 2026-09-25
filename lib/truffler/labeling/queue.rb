@@ -26,6 +26,7 @@ module Truffler
       def forget(record)
         Records::RecordState.where(record_type: record_type, record_id: record.id).delete_all
         Records::Label.where(record_type: record_type, record_id: record.id).delete_all
+        Records::Embedding.where(record_type: record_type, record_id: record.id).delete_all
       end
 
       def schedule(tenant_key)

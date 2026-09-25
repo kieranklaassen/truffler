@@ -11,6 +11,7 @@ module Truffler
     attr_writer :client, :cache_store, :logger
     attr_accessor :miss_retention, :miss_min_distinct_users
     attr_writer :secret_key_base
+    attr_accessor :vector_store, :embedding_cost_per_million_tokens
 
     def initialize(env: ENV)
       @model = "jev-latest"
@@ -32,6 +33,8 @@ module Truffler
       @miss_min_distinct_users = 5
       @backfill_spend_cap = nil
       @resume_pending_after = 5.minutes
+      @vector_store = :auto
+      @embedding_cost_per_million_tokens = 0.02
     end
 
     def client
