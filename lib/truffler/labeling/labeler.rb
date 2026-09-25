@@ -102,9 +102,12 @@ module Truffler
         records
       end
 
+      # A label is current when it has stored rows and all carry its current
+      # fingerprint; choice labels store only some options (see sparse_choice).
       def stale_keys(stored, fingerprints, tenant_key, askable)
         askable.reject do |label|
-          label.storage_keys(tenant_key).all? { |key| stored[key] == fingerprints[label.key] }
+          present = label.storage_keys(tenant_key).select { |key| stored.key?(key) }
+          present.any? && present.all? { |key| stored[key] == fingerprints[label.key] }
         end.map(&:key)
       end
 
@@ -161,7 +164,8 @@ module Truffler
         case label.type
         when :noul then [ [ label.key, answers.noul(id) ] ]
         when :score then [ [ label.key, answers.score(id) ] ]
-        when :choice then label.options(tenant_key).keys.map { |option| [ "#{label.key}:#{option}", answers.probability(id, option) ] }
+        when :choice
+          LabelDefinition.sparse_choice(label.options(tenant_key).keys.to_h { |option| [ "#{label.key}:#{option}", answers.probability(id, option) ] }).to_a
         end
       end
     end

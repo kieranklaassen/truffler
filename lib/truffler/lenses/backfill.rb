@@ -76,16 +76,18 @@ module Truffler
         scope.where(Arel.sql(stale_sql)).reorder(definition.arrival_order).limit(batch_size).to_a
       end
 
+      # Stale unless every lens label has a row under its current fingerprint;
+      # a choice label stores only some of its options.
       def stale_sql
-        expected = lens.labels.values.flat_map do |label|
-          print = Lenses.fingerprint(label.question)
-          label.storage_keys.map { |key| ActiveRecord::Base.sanitize_sql_array([ "(label_key = ? AND fingerprint = ?)", key, print ]) }
-        end
         pk = "#{model.quoted_table_name}.#{model.connection.quote_column_name(model.primary_key)}"
-        ActiveRecord::Base.sanitize_sql_array([
-          "(SELECT COUNT(*) FROM #{LABELS} WHERE #{LABELS}.record_type = ? AND #{LABELS}.record_id = #{pk} " \
-          "AND (#{expected.join(' OR ')})) < ?", model.polymorphic_name, expected.size
-        ])
+        current = lens.labels.values.map do |label|
+          ActiveRecord::Base.sanitize_sql_array([
+            "EXISTS (SELECT 1 FROM #{LABELS} WHERE #{LABELS}.record_type = ? AND #{LABELS}.record_id = #{pk} " \
+            "AND #{LABELS}.label_key IN (?) AND #{LABELS}.fingerprint = ?)",
+            model.polymorphic_name, label.storage_keys, Lenses.fingerprint(label.question)
+          ])
+        end
+        "NOT (#{current.join(' AND ')})"
       end
 
       # Labels one tenant's records through the labeler, which asks only

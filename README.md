@@ -364,6 +364,7 @@ Set these in `Truffler.configure do |config| ... end`.
 | `lenses.generator`, `lenses.drafter_model`, `lenses.user_key` | `RubyLLMGenerator`, nil, `"User:42"` style | Drafting model seam and user key mapping. |
 | `tenant_enabled` | nil (every tenant) | `->(model, tenant_key) { ... }`, asked for tenant-scoped models only. A disabled tenant is never labeled, embedded, or backfilled (see Indexing only some tenants). |
 | `backfill_spend_cap_scope` | `:tenant` | `:tenant` keeps a spend ledger per tenant for tenant-scoped models, so `backfill_spend_cap` applies to each tenant. `:app` keeps one ledger per model. Unscoped models always use one. |
+| `choice_min_probability` | 0.05 | Choice labels store a row only for options at or above this probability, plus the most likely option. A missing option reads as 0.0 in filters, boosts, label vectors, and contributions. `nil` stores every option. No migration is needed: rows written earlier stay until their record is relabeled. |
 
 ## Jobs to schedule
 

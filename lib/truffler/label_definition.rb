@@ -1,7 +1,9 @@
 module Truffler
   # One typed label question. Nouls store their probability, scores their
   # normalized position, and choices one row per option ("label:option") with
-  # that option's probability. Choice options may be a callable of the tenant
+  # that option's probability, for options at or above
+  # config.choice_min_probability plus the most likely option; a missing
+  # option row reads as 0.0. Choice options may be a callable of the tenant
   # key, which makes the vocabulary per-tenant; a tenant it gives no options
   # (`{}` or nil) simply does not have the label. An option's value is its
   # description, or `{ description:, search: }` to give query encoding a
@@ -104,8 +106,17 @@ module Truffler
       case type
       when :noul then { key => probability(value) }
       when :score then { key => level(value) }
-      when :choice then choice_values(value, options(tenant_key).keys)
+      when :choice then self.class.sparse_choice(choice_values(value, options(tenant_key).keys))
       end
+    end
+
+    # Drops choice option rows ({"label:option" => probability}) below
+    # config.choice_min_probability, always keeping the most likely option.
+    def self.sparse_choice(values, min: Truffler.config.choice_min_probability)
+      return values if min.nil? || values.empty?
+
+      top = values.max_by { |_, probability| probability.to_f }.first
+      values.select { |key, probability| key == top || probability.to_f >= min }
     end
 
     def storage_keys(tenant_key = nil)

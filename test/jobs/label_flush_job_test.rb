@@ -18,7 +18,7 @@ class LabelFlushJobTest < Truffler::TestCase
 
     perform_enqueued_jobs
 
-    assert_equal 6, Label.where(record_id: email.id).count
+    assert_equal 4, Label.where(record_id: email.id).count
     assert_equal "labeled", State.sole.status
   end
 

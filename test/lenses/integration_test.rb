@@ -54,7 +54,7 @@ class LensIntegrationTest < Truffler::TestCase
     label_claimed
 
     key = "lens:#{lens.id}:language"
-    assert_equal({ "#{key}:dutch" => 1.0, "#{key}:other" => 0.0 }, lens_rows(message, lens))
+    assert_equal({ "#{key}:dutch" => 1.0 }, lens_rows(message, lens))
     assert_equal vocabulary.fingerprints(tenant_key: "1")[key], Label.find_by!(label_key: "#{key}:dutch").fingerprint
     vector = Truffler::Embeddings::LabelVector.new(FeedMessage).read(message)
     assert_equal shorter.size + 2, vector.size
@@ -132,7 +132,7 @@ class LensIntegrationTest < Truffler::TestCase
 
     perform_enqueued_jobs(only: Truffler::Jobs::LensBackfillJob)
 
-    assert(messages.all? { |message| lens_rows(message, lens).size == 2 })
+    assert(messages.all? { |message| lens_rows(message, lens).size == 1 })
     assert_equal 3, Label.where("label_key LIKE ?", "lens:#{lens.id}:%").distinct.count(:record_id)
     assert_operator lens.reload.spent_usd, :>, 0
   end
@@ -148,7 +148,7 @@ class LensIntegrationTest < Truffler::TestCase
 
     assert_equal before, vocabulary.version(tenant_key: "1")
     assert_equal FeedMessage.truffler_definition.label_keys, vocabulary.labels_for(tenant_key: "1").keys
-    assert_equal 2, lens_rows(message, lens).size
+    assert_equal 1, lens_rows(message, lens).size
     assert_equal :inactive, Lenses::Backfill.new(lens.reload).run.status
   end
 
