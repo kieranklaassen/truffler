@@ -30,6 +30,30 @@ class SearchTimePhraseTest < Truffler::TestCase
     assert_nil window(%("this week" newsletter))
   end
 
+  test "0.1.2: hour phrases and past week/month are rolling windows ending now" do
+    assert_equal [ "Last 3 hours", NOW - 3.hours, nil ], window("errors in the last 3 hours")
+    assert_equal [ "Last 2 hours", NOW - 2.hours, nil ], window("past 2 hours signups")
+    assert_equal [ "Last 1 hour", NOW - 1.hour, nil ], window("last 1 hour")
+    assert_equal [ "Last hour", NOW - 1.hour, nil ], window("refunds last hour")
+    assert_equal [ "Past hour", NOW - 1.hour, nil ], window("past hour")
+    assert_equal [ "Past week", NOW - 7.days, nil ], window("bugs in the past week")
+    assert_equal [ "Past month", Time.utc(2026, 8, 23, 15, 30), nil ], window("past month churn")
+    assert_equal [ "Last 3 weeks", NOW - 21.days, nil ], window("past 3 weeks")
+    assert_equal [ "Last 2 months", Time.utc(2026, 7, 23, 15, 30), nil ], window("past 2 months")
+    assert_equal [ "Last 1 month", Time.utc(2026, 8, 23, 15, 30), nil ], window("last 1 month")
+    assert_equal [ "Last week", Time.utc(2026, 9, 14), Time.utc(2026, 9, 21) ], window("last week")
+    assert_equal [ "Last month", Time.utc(2026, 8, 1), Time.utc(2026, 9, 1) ], window("last month")
+    assert_nil window("past 0 hours")
+    assert_nil window("happy hour")
+  end
+
+  test "0.1.2: hour and past week words leave the keywords and the exact tokens" do
+    query = Query.new("refunds last 3 hours")
+    assert_equal %w[refunds], query.search_tokens
+    assert_empty query.exact_tokens
+    assert_equal %w[refunds], Query.new("refunds past week").search_tokens
+  end
+
   test "0.1.1: time words leave the keywords, the exact tokens, and the Jev questions" do
     query = Query.new("refunds past 30 days")
     assert_equal %w[refunds], query.search_tokens
