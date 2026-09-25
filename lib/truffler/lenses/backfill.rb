@@ -88,7 +88,7 @@ module Truffler
       # once per run, so disabled tenants are never paged (and never refetched
       # by the next LensBackfillJob).
       def enabled_tenants
-        @enabled_tenants ||= definition.index_relation(model.all).distinct.pluck(definition.tenant_column)
+        @enabled_tenants ||= definition.index_relation(model.all).reorder(nil).distinct.pluck(definition.tenant_column)
           .select { |tenant_key| definition.tenant_enabled?(tenant_key.to_s) }
       end
 
