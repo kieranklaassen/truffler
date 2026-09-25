@@ -13,6 +13,7 @@ module Truffler
         cache: EncodingCache.new)
         @model = model
         @definition = model.try(:truffler_definition) || raise(DefinitionError, "#{model.name} has no truffler declaration")
+        @definition.validate_columns!
         @query = Query.wrap(query)
         @tenant_key = tenant&.to_s
         @scope = scope.nil? && !@definition.scoped? ? model.all : scope

@@ -58,6 +58,7 @@ module Truffler
       def initialize(model, spend_cap: Truffler.config.backfill_spend_cap, batch_size: Truffler.config.batch_size,
         page_size: nil, cursor: nil, spent: 0.0, client: Truffler.config.client, budget: Budget.new)
         @model = model
+        model.truffler_definition.validate_columns!
         @batch_size = batch_size
         @page_size = page_size || batch_size * 5
         @cursor = cursor

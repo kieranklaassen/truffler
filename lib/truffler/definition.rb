@@ -71,11 +71,26 @@ module Truffler
       Array(model.try(:encrypted_attributes)).map(&:to_s) & fields
     end
 
+    # Column checks wait for the table: a model declared at boot on a fresh
+    # database is checked on its first labeling or search instead.
     def validate!
       raise DefinitionError, "#{model.name}: declare the fields Jev reads with `reads`" if fields.empty?
 
-      check_columns([ tenant_column, *fields, *Array(keyword).grep(String), *supplied_labels.flat_map(&:watch) ].compact.uniq)
+      @columns_deferred = !table_available?
+      validate_columns! unless @columns_deferred
       check_embeddings if embeddings
+    end
+
+    def validate_columns!
+      return if @columns_checked
+
+      if @columns_deferred
+        return unless table_available?
+
+        model.reset_column_information
+      end
+      check_columns([ tenant_column, *fields, *Array(keyword).grep(String), *supplied_labels.flat_map(&:watch) ].compact.uniq)
+      @columns_checked = true
     end
 
     DEFAULT_RANKING = { label: 1.0, text: 1.0, keyword: 0.5, exact: 1.0, min_similarity: 0.0 }.freeze
@@ -94,6 +109,12 @@ module Truffler
     end
 
     private
+
+    def table_available?
+      model.connection.data_source_exists?(model.table_name)
+    rescue ActiveRecord::ActiveRecordError
+      false
+    end
 
     def check_columns(names)
       columns = model.attribute_names

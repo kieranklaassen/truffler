@@ -60,6 +60,42 @@ class DefinitionTest < Truffler::TestCase
     assert_includes error.message, "missing_column"
   end
 
+  test "0.1.1: declaring on a missing table defers column checks until the first labeling" do
+    connection = ActiveRecord::Base.connection
+    model = self.class.const_set(:LateNote, define_model("DefinitionTest::LateNote", table: "late_notes"))
+    model.truffler do
+      tenant :account_id
+      reads :title
+      label :pinned, :noul, from: ->(note) { note.pinned }
+    end
+
+    connection.create_table(:late_notes) do |t|
+      t.integer :account_id
+      t.string :title
+      t.boolean :pinned
+    end
+    note = model.create!(account_id: 1, title: "Hi", pinned: true)
+    drain_jobs
+
+    assert_equal [ [ "pinned", 1.0 ] ], Truffler::Records::Label.where(record_id: note.id).pluck(:label_key, :value)
+  ensure
+    connection.drop_table(:late_notes, if_exists: true)
+    self.class.send(:remove_const, :LateNote) if self.class.const_defined?(:LateNote, false)
+  end
+
+  test "0.1.1: unknown columns on a table created after declaration raise at first use" do
+    connection = ActiveRecord::Base.connection
+    model = define_model("LateBadNote", table: "late_bad_notes")
+    model.truffler { reads :nope }
+
+    connection.create_table(:late_bad_notes) { |t| t.string :title }
+
+    error = assert_raises(Truffler::DefinitionError) { model.truffler("x", scope: model.all) }
+    assert_match(/unknown attributes nope/, error.message)
+  ensure
+    connection.drop_table(:late_bad_notes, if_exists: true)
+  end
+
   test "an unknown tenant column raises DefinitionError" do
     assert_raises(Truffler::DefinitionError) do
       define_model("BadTenant") { truffler { tenant :team_id; reads :subject } }
