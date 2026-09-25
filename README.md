@@ -85,7 +85,68 @@ Here is what each option does:
 - `embeddings column: :my_vector` searches a vector column you maintain yourself. Truffler never writes it.
 - `embeddings` refuses to send encrypted fields to the embedding provider unless you pass `allow_encrypted: true`.
 
-Saving a record enqueues labeling (and embedding, when enabled) after commit, but only when a field in `reads` or the tenant column changed. Destroying a record removes its labels, state, and embeddings.
+`label key, type, **options` takes:
+
+| Option | Applies to | Meaning |
+|---|---|---|
+| `question:` | asked labels (required); optional with `from:` | What Jev is asked about each record. |
+| `criteria:` | `:noul` | `{ true => "...", false => "..." }` guidance for Jev. |
+| `options:` | `:choice` (required) | Option names, `{ option => description }`, or a callable of the tenant key. |
+| `legend:` | `:score` (required) | Two or more ordered levels, as an array or `{ index => description }`. |
+| `filter_at:`, `boost:`, `filter_weight:` | all | Filter threshold, boost weight, and the intent weight a filter adds. |
+| `description:` | all | The label's wording in query encoding. Defaults to the question, then to the key. |
+| `from:` | all | `->(record) { answer }`. Makes the label host-supplied; Jev is never asked. See [Labels you already compute](#labels-you-already-compute). |
+| `watch:` | with `from:` | Extra columns whose change refreshes the label, in addition to `reads`. |
+| `version:` | with `from:` | Any value; changing it rewrites the label for every record on the next backfill. |
+
+Keys must be lowercase snake case without a double underscore, and `lens` is reserved.
+
+Saving a record enqueues labeling (and embedding, when enabled) after commit, but only when a field in `reads`, the tenant column, or a supplied label's `watch:` column changed. Destroying a record removes its labels, state, and embeddings.
+
+### Labels you already compute
+
+If your app already classifies records, declare those answers with `from:` instead of asking Jev again. happyhappy, for example, stores sentiment, anger, category, product, actionability, and author role on each item's classification:
+
+```ruby
+class Item < ApplicationRecord
+  include Truffler::Model
+
+  truffler do
+    tenant :workspace_id
+    reads :title, :body
+
+    label :sentiment, :choice, options: %w[positive neutral negative mixed],
+      from: ->(item) { item.classification&.sentiment }, filter_at: 0.5
+    label :anger, :noul, from: ->(item) { item.classification&.anger }, boost: 2.0
+    label :category, :choice, options: ->(workspace_id) { Category.names_for(workspace_id) },
+      from: ->(item) { item.classification&.category_probabilities }, description: "what the feedback is about"
+    label :actionability, :score, legend: %w[none vague clear], from: ->(item) { item.classification&.actionability },
+      watch: [ :triaged_at ], version: 2
+
+    label :needs_reply, :noul, question: "Does this item ask the team for a reply?"   # still asked of Jev
+  end
+end
+```
+
+`from:` receives the record and returns the answer in the shape Jev answers are stored in:
+
+| Type | `from:` returns | Stored |
+|---|---|---|
+| `:noul` | a probability from 0 to 1, or `true`/`false` | the probability under `label` |
+| `:choice` | one option string (meaning 1.0 for it), or `{ option => probability }` | one row per option, `label:option`; options left out store 0.0 |
+| `:score` | a level index into `legend:` | `index / (levels - 1)`, as for Jev scores |
+
+`nil` stores nothing: the record reads as missing that label, not as 0. An answer out of shape (an undeclared option, a probability outside 0..1, a level past the legend) or a `from:` that raises stores nothing for that label and emits `truffler.supplied_label_failed` with the label key and error class. Rows already stored keep serving until the next good write.
+
+Supplied labels never reach Jev. They are never in a labeling request, take no budget slot, cost nothing, and do not count toward a lens or backfill spend cap. A flush or backfill where only supplied labels are stale makes no Jev call. The labeling job writes them before it asks Jev anything, so a Jev outage or a budget denial never holds them back. Otherwise they behave like asked labels: same `truffler_labels` rows, the same filters, boosts, chips, and label vectors, and query encoding asks Jev how a query uses them (using `description:`), within the one encoding call per query.
+
+To keep them fresh:
+
+- Changing a `reads` field, the tenant column, or one of the label's `watch:` columns refreshes it after commit. Stored values keep serving until the labeling job rewrites them.
+- Call `record.truffler_refresh_labels!` when the answers change somewhere truffler cannot see, such as the job that runs your classifier after insert. It rewrites the record's supplied labels immediately, with no Jev call.
+- Bump `version:` when the logic behind `from:` changes. That changes the vocabulary version, so `rake truffler:backfill` rewrites the label for every record, again at no cost.
+
+A supplied label's fingerprint digests its type, options, legend, description, and `version:`, never the Jev model, so changing `config.model` does not rewrite supplied labels.
 
 ## Clients
 
@@ -247,7 +308,7 @@ Set these in `Truffler.configure do |config| ... end`.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `model` | `"jev-latest"` | Jev model pin. Changing it makes every label stale. |
+| `model` | `"jev-latest"` | Jev model pin. Changing it makes every asked label stale; supplied (`from:`) labels are unaffected. |
 | `client` | `Clients::RubyLLMTypeSafe.new` | Jev client (see Clients). |
 | `cache_store` | `Rails.cache` | Budget counters, encodings, Smart runs. Must be shared and support `increment`. |
 | `requests_per_minute` | 1,200 (`TYPESAFE_REQUESTS_PER_MINUTE`) | TypeSafe account limit. |
@@ -261,7 +322,7 @@ Set these in `Truffler.configure do |config| ... end`.
 | `max_field_chars`, `request_token_budget`, `max_questions_per_request` | 4,000, 48,000, 200 | Request packing limits. |
 | `queue_name` | `:default` | Queue for every Truffler job. |
 | `cost_per_million_tokens` | 0.042 | Jev input price, used in usage events and estimates. |
-| `backfill_spend_cap` | nil | Dollar cap per backfill run. |
+| `backfill_spend_cap` | nil | Dollar cap per backfill run. Supplied labels cost nothing and are still written once it is reached. |
 | `resume_pending_after` | 5 minutes | How long before `ResumeJob` treats work as stuck. |
 | `embedder` | `Embeddings::RubyLLMEmbedder.new` | Any `Embeddings::Embedder` subclass. The default calls `RubyLLM.embed`, which works on ruby_llm 1.x and 2. |
 | `embedding_cost_per_million_tokens` | 0.02 | Embedding price. |

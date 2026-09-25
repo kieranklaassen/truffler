@@ -4,6 +4,7 @@
 
 - `truffler do ... end` declarations on Active Record models: tenant, fields, noul/choice/score labels, keyword and exact sources, embeddings, a provider, surfaces, ranking weights, and `weak_below`.
 - Labeling on commit through a tenant-grouped queue, with packed Jev requests, per-record fingerprints, relabeling when watched fields change, `ResumeJob`, and a spend-capped backfill (`rake truffler:backfill`, `rake truffler:status`).
+- Host-supplied label answers: `label ..., from: ->(record) { ... }` stores answers your app already computes (with optional `watch:`, `version:`, and `description:`) and never asks Jev about them: no request, no budget slot, no spend, and written even while Jev is down. They filter, boost, fill label vectors, and take part in query encoding like asked labels. `record.truffler_refresh_labels!` rewrites them on demand.
 - One account-wide Jev budget with headroom, priority ceilings (live, encode, rerank, backfill), per-user caps, and a per-tenant live cap.
 - Jev clients for `ruby_llm-typesafe`, a `Callable` for host clients, a fake, and cassettes. `truffler.*` notifications carry only ids, numbers, and digests.
 - Optional text embeddings, and label vectors stored as named-dimension embeddings. Vector stores for pgvector/sqlite-vec (`neighbor`), exact cosine in Ruby, or a host-maintained column.
