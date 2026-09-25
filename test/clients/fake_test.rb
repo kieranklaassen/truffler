@@ -30,6 +30,36 @@ class FakeTest < Truffler::TestCase
     assert_in_delta 0.0, answers.score("c")
   end
 
+  test "0.1.1: unscripted choices prefer the neutral option: ignore, no option, keyword" do
+    questions = Truffler::Questions.build do |q|
+      q.choice :intent__a, instructions: "?", criteria: { "filter" => nil, "boost" => nil, "ignore" => nil }
+      q.choice :option__a, instructions: "?", criteria: { "billing" => nil, Truffler::NO_OPTION => nil }
+      q.choice :token__0, instructions: "?", criteria: { "label_term" => nil, "keyword" => nil, "filler" => nil }
+    end
+
+    answers = Truffler::Clients::Fake.new.ask(state: {}, questions: questions)
+
+    assert_equal [ "ignore", Truffler::NO_OPTION, "keyword" ], %w[intent__a option__a token__0].map { |id| answers.choice(id) }
+  end
+
+  test "0.1.1: an unscripted keystroke search on a model with labels applies no filters" do
+    Truffler.config.client = Truffler::Clients::Fake.new
+    Truffler.config.secret_key_base = "test-secret-key-base"
+    invoice = InboxEmail.create!(account_id: 1, subject: "Invoice overdue")
+    InboxEmail.create!(account_id: 1, subject: "Lunch")
+    drain_jobs
+    search = -> { InboxEmail.truffler("invoice", tenant: 1, scope: InboxEmail.all, user: "user-1") }
+
+    search.call
+    perform_enqueued_jobs(only: Truffler::Jobs::EncodeQueryJob)
+    result = search.call
+
+    assert_equal :cached, result.encoding_status
+    assert result.encoding.empty?
+    assert_empty result.chips
+    assert_equal [ invoice.id ], result.records.map(&:id)
+  end
+
   test "scripts answers by label suffix and by block, and records calls" do
     fake = Truffler::Clients::Fake.new
     fake.answer(:spam) { |tag, state| state.dig("records", tag, "body").include?("watches") ? 0.9 : 0.1 }
