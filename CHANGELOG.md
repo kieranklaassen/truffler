@@ -16,9 +16,9 @@ Fixes from the Cora integration at Postgres scale, and two from happyhappy's 0.1
 - New `Truffler::Clients::Evaluator` for clients that read `schema.questions` and return an evaluation object without `to_h`, such as Cora's `TypeSafeClient`. The Cora checklist in `docs/host-integration.md` now shows it instead of the broken `Callable` line.
 - A query word that names any declared label key, option key or option search-text word, applied or not, is never dropped as filler. `email` and `emails` are no longer default `config.filler_words`.
 - Removing the last label chip no longer makes filler nouns required keywords while a time phrase still applies.
-- A lens backfill skips disabled tenants, and the labeler never deletes a disabled tenant's state rows; it returns them to pending at backfill priority, so re-enabling relabels only what is stale.
+- A lens backfill never pages disabled tenants (filtered in SQL, so a capped `LensBackfillJob` cannot refetch them forever), and the labeler never deletes a disabled tenant's state rows; it returns them to pending at backfill priority, so re-enabling relabels only what is stale.
 - Removing chips keeps declared label and option words (option search text included) as keywords, the same as the encoder and the cold-cache path.
-- `truffler:status` and `Backfill.status(model, tenant_key:)` count only records inside `index_scope` and enabled tenants, so a finished partial rollout reports nothing missing.
+- `truffler:status` and `Backfill.status(model, tenant_key:)` count only records inside `index_scope` and enabled tenants, and only their state rows, so a finished partial rollout reports nothing missing or pending.
 
 ## [0.1.4]
 

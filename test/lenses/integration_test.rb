@@ -315,4 +315,19 @@ class LensIntegrationTest < Truffler::TestCase
     assert_empty lens_rows(other, lens)
     assert_not_empty Label.where("label_key LIKE ?", "lens:#{lens.id}:%").where.not(record_id: other.id)
   end
+
+  test "0.1.5: an app lens backfill pages past newer disabled-tenant records instead of refetching them (Bugbot)" do
+    enabled = feed_message("Hallo", account: 1, at: 2.days.ago)
+    3.times { |index| feed_message("Hallo #{index}", account: 2, at: index.minutes.ago) }
+    label_claimed(FeedMessage, "1")
+    label_claimed(FeedMessage, "2")
+    Truffler.config.tenant_enabled = ->(_model, tenant_key) { tenant_key != "2" }
+
+    lens = dutch_lens(scope: Scope.app)
+    answer_lens_language(lens)
+    result = Truffler::Lenses::Backfill.new(lens.reload, batch_size: 1, max_batches: 1).run
+
+    assert_equal 1, result.labeled
+    assert_not_empty lens_rows(enabled, lens)
+  end
 end

@@ -188,7 +188,7 @@ module Truffler
       # and the one tenant when `tenant_key:` is given.
       def status
         scope, tenants = status_scope
-        tracked = states
+        tracked = states.where(record_id: scope.select(model.primary_key))
         tracked = tracked.where(tenant_key: tenants) if tenants
         counts = tracked.group(:status).count
         labeled = tracked.where(status: "labeled").group(:tenant_key, :vocabulary_version).count

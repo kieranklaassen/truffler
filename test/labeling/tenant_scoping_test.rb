@@ -306,4 +306,17 @@ class TenantScopingTest < Truffler::TestCase
     assert_equal 1, status[:current]
     assert_equal 1, Backfill.status(TenantNote, tenant_key: "1")[:total]
   end
+
+  test "0.1.5: status ignores state rows left by records that moved out of index_scope (Bugbot)" do
+    kept = create_note(account_id: 1)
+    archived = create_note(account_id: 1)
+    perform_enqueued_jobs(only: Truffler::Jobs::LabelFlushJob)
+    archived.update_columns(archived: true)
+
+    status = Backfill.status(TenantNote)
+
+    assert_equal 1, status[:total]
+    assert_equal 1, status[:labeled]
+    assert_equal [ kept.id, archived.id ].sort, State.where(record_type: "TenantNote").pluck(:record_id).sort
+  end
 end
