@@ -95,7 +95,7 @@ Here is what each option does:
 - Choice `options:` may be a callable of the tenant key, which gives each tenant its own vocabulary. A tenant it gives no options (`{}` or nil) simply lacks the label: it is neither asked nor encoded there. The option name `truffler:none` is reserved (see `Truffler::NO_OPTION` below).
 - An option's value may be `{ description: "...", search: "..." }` instead of a plain description, e.g. `options: { "prod-a1" => { description: "Cora, the AI email assistant that drafts replies...", search: "Cora email assistant" } }`. Jev labels records with the description; query words are matched against the short search text (else the description), and the request state's `option_names` carries it. A per-tenant callable may return the same shape. Editing a search text never stales labels or triggers a backfill; it only changes the query-encoding cache key, so queries are re-encoded.
 - `watch :column, ...` relabels every label when one of those columns changes. Saving a record only relabels on columns that changed, so a `reads` field backed by a method (a conversation built from messages, say) needs the columns it is built from in `watch`.
-- `keyword` also accepts a single callable, `->(scope, tokens) { relation }`.
+- `keyword` also accepts a single callable, `->(scope, tokens) { relation }`. It, and each `exact` callable, may return an Array of ids instead of a relation, which is far faster on a large tenant (see [Keystroke search at scale](#keystroke-search-at-scale)).
 - `embeddings column: :my_vector` searches a vector column you maintain yourself. Truffler never writes it.
 - `embeddings` refuses to send encrypted fields to the embedding provider unless you pass `allow_encrypted: true`.
 - `invite_on_pending_encoding` (default true) shows the Smart search row with reason `:encoding_pending` while a query's first encoding is in flight, even when a `keyword` source matched. A model with no `keyword` source always does. Pass `false` to invite only on weak or empty results.
@@ -203,6 +203,7 @@ The returned `Truffler::Search::Result` exposes:
 - `records` and `ids`.
 - `chips`: `[{key:, label:, kind: :filter | :boost | :time, name:}]`.
 - `invite_row`: `{query:, reason: :weak | :empty | :encoding_pending}` or nil.
+- `local_weak?`: whether the list is too weak to stand alone (starts the backup provider). A pending encoding on a model with a `keyword` source invites Smart search without making the list weak.
 - `encoding_status`: `:cached`, `:pending`, or `:none`.
 - `watermark` and `new_matches_count`.
 - `explicit_action`: the surface's declared action.
@@ -214,6 +215,39 @@ For the "N new matches" row on a later request, pass the watermark back in:
 ```ruby
 Email.jev_new_matches_count(params[:q], tenant: account.id, scope: account.emails, user: current_user, since: Time.iso8601(params[:since]))
 ```
+
+### Keystroke search at scale
+
+The keystroke query is shaped so a large tenant (tens of thousands of records) stays fast on Postgres:
+
+- Return ids from `keyword` and `exact` callables when you can, e.g. `.limit(2_000).pluck(:id)` from a blind index. Ids become a literal `IN (...)` list. A returned relation is rendered as `id = ANY(ARRAY(subquery))` on Postgres (plain `IN (subquery)` elsewhere), so it runs once instead of as a hashed filter over every tenant row, but the id list is still faster.
+- Label-only and filtered searches, where every record past the tenant and filters is a candidate, read label scores from one grouped aggregate over `truffler_labels` joined on `record_id`, never a subquery per row. New installs get `index_truffler_labels_for_search` with `INCLUDE (record_id)`, which makes that aggregate an index-only scan. On an existing install, add it with a migration (Postgres 11+):
+
+  ```ruby
+  class CoverTrufflerLabelsForSearch < ActiveRecord::Migration[8.0]
+    disable_ddl_transaction!
+
+    def change
+      add_index :truffler_labels, [:record_type, :tenant_key, :label_key, :value], include: [:record_id],
+        name: "index_truffler_labels_for_search_covering", algorithm: :concurrently
+      remove_index :truffler_labels, [:record_type, :tenant_key, :label_key, :value], name: "index_truffler_labels_for_search",
+        algorithm: :concurrently
+    end
+  end
+  ```
+
+  It is optional: the grouped aggregate already replaces the per-row subquery, and the index only saves heap reads.
+- With embeddings on Postgres, text similarity comes from the tenant's top `k` neighbors (`ORDER BY embedding <=> q LIMIT k`), joined on `record_id`. An HNSW index on `truffler_embeddings.embedding` serves it. Records outside the top `k` score no text similarity; see `vector_store` under [Configuration](#configuration).
+- The plans these queries produce are costed high enough that Postgres JIT often compiles them, which can add 0.3 to 0.9 s to a query that runs in tens of milliseconds. Turn JIT off for the keystroke only:
+
+  ```ruby
+  result = Email.transaction do
+    Email.connection.execute("SET LOCAL jit = off")
+    Email.truffler(params[:q], tenant: account.id, scope: account.emails, user: current_user)
+  end
+  ```
+
+  `SET LOCAL` lasts until the transaction ends, so other queries keep JIT. `result.records` is loaded inside the block.
 
 ## Smart search and streaming
 
@@ -353,7 +387,7 @@ Set these in `Truffler.configure do |config| ... end`.
 | `resume_pending_after` | 5 minutes | How long before `ResumeJob` treats work as stuck. |
 | `embedder` | `Embeddings::RubyLLMEmbedder.new` | Any `Embeddings::Embedder` subclass. The default calls `RubyLLM.embed`, which works on ruby_llm 1.x and 2. |
 | `embedding_cost_per_million_tokens` | 0.02 | Embedding price. |
-| `vector_store` | `:auto` | `:neighbor` (pgvector `<=>`, or sqlite-vec `vec_distance_cosine` when you load the extension), `:ruby` (exact cosine in Ruby), or `:auto` (neighbor when available, otherwise Ruby). A model declaring `embeddings column:` always reads its own column. |
+| `vector_store` | `:auto` | `:neighbor` (pgvector `<=>`, or sqlite-vec `vec_distance_cosine` when you load the extension), `:ruby` (exact cosine in Ruby), or `:auto` (neighbor when available, otherwise Ruby). Or a store instance, e.g. `Truffler::Embeddings::NeighborStore.new(k: 500)` or your own `VectorStore` subclass. On Postgres the neighbor store scores text from the tenant's top `k` (default 200) neighbors; `NeighborStore.new(top_k: false)` scores every row exactly. A model declaring `embeddings column:` always reads its own column. |
 | `filler_words` | `customer(s) people person user(s) message(s) item(s) stuff thing(s)` | Generic nouns never required as keywords on their own (matched ignoring plurals). Replace the list or extend it (`config.filler_words += %w[ticket]`). |
 | `encoding_prefetch` | `QueryEncoding::Prefetch.new` | Cache-miss hook, called as `call(model, query, cache_key:, tenant_key:, user_key:)`. |
 | `encoding_deadline` | 1.0 | Seconds a Smart run waits for an in-flight query encoding. |

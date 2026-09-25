@@ -117,7 +117,7 @@ Cora runs on Postgres with pgvector, uses ruby_llm 1.x with its own `TypeSafeCli
 4. Encrypted models need some decisions:
    - Make sure Active Record encryption is configured, so that miss-log text and lens descriptions are stored as ciphertext rather than dropped.
    - `embeddings` refuses encrypted fields until you pass `allow_encrypted: true`. This is an explicit decision to send decrypted text to the embedding provider. Alternatively, fill your own vector column and declare `embeddings column:`.
-   - Encrypted bodies cannot use `keyword`. Use `exact` sources over deterministically encrypted columns (sender, thread id) for blind-index lookups. With no `keyword`, the invite row reads `:encoding_pending` until the query has an encoding.
+   - Encrypted bodies cannot use `keyword`. Use `exact` sources over deterministically encrypted columns (sender, thread id) for blind-index lookups. With no `keyword`, the invite row reads `:encoding_pending` until the query has an encoding. A blind-index `keyword` or `exact` callable should return an Array of ids (for example the newest 2,000), not a relation: on Postgres an id list is far faster. Run the keystroke with `SET LOCAL jit = off` (see the README's "Keystroke search at scale").
 5. `RubyLLMEmbedder` (`RubyLLM.embed`) and the lens `RubyLLMGenerator` both work on ruby_llm 1.x.
 6. Declare `provider :gmail, label: "Gmail", search: ->(query, tenant:, user:) { ... }`. Look up the Gmail connection from `tenant` and `user` inside the callable, and return only the fields the section renders. The results sit in the cache for `smart_run_ttl`.
 7. Map Cora's categories onto `choice` labels. Per-tenant categories can use `options: ->(tenant_key) { ... }`.
