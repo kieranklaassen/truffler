@@ -55,6 +55,7 @@ Jev's constraints set the shape. It costs $0.042 per million input tokens and ou
 - **The gem owns label storage, versioning, and backfill.** (session-settled: user-directed — chosen over app-managed columns: "apps don't have to think about it".) Governs R4, R6, R7.
 - **Embeddings are an optional recall source inside the gem.** Off by default; on for Cora; the benchmark decides for happyhappy. The gem can also reuse an embedding column the app already has. (session-settled: user-directed — chosen over bring-your-own-only and no embeddings: rerank can only improve what recall found, and Cora embeds only part of its mail.) Governs R10, R11.
 - **Rank with label vectors and text embeddings in one query.** Jev's answers form a named-dimension embedding per record, and the query becomes a weighted intent vector over the same labels. Results are ranked by weighted dot product after hard filters, blended with text-embedding similarity when embeddings are on. (session-settled: user-directed — chosen over separately ranked lists merged afterwards and label-only ranking: one round trip is fastest at tenant-scoped sizes.) Governs R13, R16.
+- **Lenses: dynamic, LLM-drafted dimensions ship in v1, with configurable creation.** A user or developer describes a kind of search in plain language, RubyLLM drafts atomic Jev questions, Jev previews them on a sample, and accepted lenses become new label dimensions. (session-settled: user-directed — chosen over a follow-up PR and waiting for real search logs: Kieran wants search tuned to what users care about from the start; creation policy is configurable rather than fixed.) Governs R39, R40, R41, R42, R43, R44.
 - **One account-wide Jev budget, rerank only on explicit action.** The request limit, not cost, caps throughput, so every Jev call shares one budget with a fixed priority. (session-settled: user-approved — chosen over rerank on every keystroke and per-feature budgets.) Governs R22, R26.
 - **In Cora, first-time intent queries are answered by Smart search.** With a cold cache the keystroke list offers the Smart search row instead of filling in or reshuffling when Jev's answer lands. (session-settled: user-directed — chosen over filling in results quietly and suggested chips: keeps the keystroke list stable and makes the explicit action the one path.) Governs R21, R38.
 - **Provider search is a backup, not the primary.** (session-settled: user-directed — chosen over Gmail-first as Cora does today.) Governs R19.
@@ -119,6 +120,15 @@ Jev's constraints set the shape. It costs $0.042 per million input tokens and ou
 
 - R37. happyhappy adopts the gem first for feed search over items and messages. It validates the declaration API, the labeling pipeline, vocabulary versioning, keystroke latency on plaintext data, query encoding with chips, Smart search with streamed buckets, and the shared Jev budget under real traffic.
 - R38. Cora adopts the gem with its own Jev client (R2), embeddings turned on, and Gmail as the backup source. It alone validates encrypted-model labeling and embedding, embedding-based recall over encrypted mail, provider backup, and speed and cost over millions of emails. In Cora, a first-time intent query resolves on the explicit action; before that, the keystroke list shows the Smart search row (R21).
+
+**Lenses (dynamic dimensions)**
+
+- R39. A lens is a named set of Jev label questions drafted from a plain-language description (for example "happy people who speak a certain language") by a generative model through RubyLLM. It reuses existing labels where they fit and proposes new atomic questions only for the rest.
+- R40. Before a lens is saved, Jev answers its draft questions on a sample of records in the lens's scope (default 20), and the creator sees the answer distribution, example matches, and the estimated backfill cost and duration.
+- R41. An accepted lens extends the vocabulary for its scope, bumping the version. Its dimensions join label vectors and query encoding; new records get them at once, and older records are backfilled at backfill priority, most-likely-surfaced records first.
+- R42. Lens creation is configurable per app: who may create lenses (developers and admins, any user for their tenant, or each user for themselves) and what a lens applies to (app, tenant, or creator). System-proposed lenses drafted from logged misses (R28) can be turned on and always need approval.
+- R43. Every lens has a spend cap. A lens unused for a configurable period expires and stops backfilling, and usage counts let a developer promote a lens into the declared vocabulary.
+- R44. Drafting never sends record text to the generative model, only the description, the existing label vocabulary, and, for proposals, aggregated miss clusters. On encrypted models, lens descriptions follow the miss-log privacy rules (R29).
 
 ### Key Flows
 
@@ -189,7 +199,7 @@ flowchart TB
 **Deferred for later**
 
 - Static product catalogs and as-you-type product search at millions of rows.
-- Automatic label creation and backfill without a developer step.
+- Lenses saved without a preview, or system-proposed lenses applied without approval.
 - Per-tenant label vocabularies beyond what planning finds necessary for Cora's per-user categories.
 - Turbo Streams delivery for Hotwire apps.
 
@@ -309,6 +319,14 @@ These are defaults chosen in pipeline mode. Each one is a tunable default or a r
   - **Text term:** with the `neighbor` store (pgvector, or SQLite with sqlite-vec), the text similarity is computed in the same `SELECT` over the tenant's filtered rows as an exact scan. An approximate (HNSW) index is an optional per-model setting, recommended only above about 100,000 rows per tenant. The `ruby` store keeps KTD8's top-K `CASE` fallback for tests and small sets.
   - **Stored `label_vector` use:** it serves ANN search when a model declares many dimensions, plus inspection and benchmarking.
   - (session-settled: user-directed — chosen over separately ranked lists merged afterwards and label-only ranking: one round trip is fastest at tenant-scoped sizes.)
+- KTD21. **Lenses are stored vocabulary extensions behind a drafter seam.**
+  - **Storage:** a `truffler_lenses` table holds `record_type`, `scope_type` (app, tenant, or user), `scope_key`, `creator_digest`, `description` (encrypted on encrypted models, R44), `questions` (JSON in the KTD2 wire shape), `status` (draft, active, expired), `spend_cap_usd`, `spent_usd`, `usage_count`, and `last_used_at`.
+  - **Labels:** lens answers are stored as ordinary `truffler_labels` rows keyed `lens:<lens_id>:<label>`, so filters, label vectors (KTD20), staleness (KTD5), and backfill (U6) work unchanged.
+  - **Vocabulary:** the vocabulary version for a scope digests the declared fingerprints plus the fingerprints of active lenses visible in that scope, so query encoding (KTD9) asks about lens dimensions only where they apply.
+  - **Drafter:** `Truffler::Lenses::Drafter` calls `RubyLLM.chat(...).with_schema(...)` (ruby_llm 1.x and 2) behind a seam with a fake, and it validates the draft against the KTD2 question shape and Jev's limits (at most 10 score levels, 255 choice options).
+  - **Preview:** Jev answers the draft on the sample in one packed request, at encode priority and inside the lens's spend cap.
+  - **Policy:** `config.lenses.creators` is one of `:developers`, `:tenant_users`, or `:each_user`; `config.lenses.proposals` is a boolean; `config.lenses.expire_after` defaults to 30 days. Hosts supply `authorize_lens(user, scope)`.
+  - (session-settled: user-directed — chosen over a follow-up PR: lenses ship in v1; inherits the labeled Key Decision governing R39-R44.)
 
 ### Resolved Planning Questions
 
@@ -906,6 +924,31 @@ The gem ships no React components. Each host-rendered requirement maps to a gem-
 - **Verification:** Every public method named in the README exists, checked by reading. The README states that the gem ships no UI components.
 
 ---
+
+### U15. Lenses: drafting, preview, activation, backfill, policy
+
+- **Goal:** A permitted user or developer can describe a kind of search, review a Jev-previewed draft, and activate it as new label dimensions in their scope.
+- **Requirements:** R39, R40, R41, R42, R43, R44, and R28 (proposals from misses). Implements KTD21.
+- **Dependencies:** U2, U3, U4, U6, U9 (lens dimensions in query encoding), U12 (miss clusters for proposals).
+- **Files:** `lib/truffler/lenses/lens.rb`, `lib/truffler/lenses/drafter.rb`, `lib/truffler/lenses/previewer.rb`, `lib/truffler/lenses/activator.rb`, `lib/truffler/lenses/policy.rb`, `lib/truffler/lenses/proposer.rb`, `lib/truffler/jobs/lens_backfill_job.rb`, `lib/truffler/jobs/expire_lenses_job.rb`, the migration template (a `truffler_lenses` table), `test/lenses/*_test.rb`.
+- **Approach:**
+  1. `Drafter.draft(description, model:, scope:)` sends the description plus the declared and visible lens vocabulary, never record text, to RubyLLM with a structured schema. It returns reused label keys and new questions, validated against the KTD2 shape and Jev limits.
+  2. `Previewer.preview(draft, sample: 20)` picks recent in-scope records, asks the new questions in one packed single-tenant request under encode budget and the lens cap, and returns the per-label distribution, up to 5 example ids per label, and a backfill estimate (records × tokens × price, and requests over the remaining budget).
+  3. `Activator.activate(draft, by:)` checks `Policy` and the host's `authorize_lens`, then persists the lens as active and bumps the scope's vocabulary version. It then enqueues `LensBackfillJob`, which orders by `arrived_at desc`, stops at the spend cap, and runs at backfill priority.
+  4. `Proposer` turns miss clusters that passed the distinct-user gate (R29) into draft lenses marked `proposed`. They need approval before activation.
+  5. `ExpireLensesJob` expires lenses unused for `expire_after` and stops their backfill. `Lens#promote!` prints the declaration snippet a developer pastes into the model.
+- **Test scenarios:**
+  - Drafting "happy people who speak Dutch" with a fake drafter reuses `sentiment` and proposes one `language` choice with an `other` option. The request sent to the drafter contains no record text.
+  - A draft with 11 score levels or 300 choice options is rejected with a validation error before any Jev call.
+  - The preview on a 20-record sample makes one Jev request holding a single tenant and returns a distribution, examples, and a cost estimate. It is refused when the lens cap would be exceeded.
+  - With `creators: :developers`, a non-admin activation raises `Truffler::NotAuthorized`. With `:each_user`, a user's lens is invisible to another user's searches and encodings.
+  - Activating a lens bumps the scope's vocabulary version, and the next encoding asks about the lens dimension. A record labeled afterwards has `lens:<id>:language` rows and a longer `label_vector`.
+  - Backfill labels newest records first and stops at the spend cap with `spent_usd` recorded.
+  - A lens unused past `expire_after` expires, stops backfill, and drops out of encodings; its stored labels remain until pruned.
+  - A proposal from a miss cluster below the distinct-user gate is never created. Above the gate it is created as `proposed` and does not affect search until approved.
+  - On an encrypted model, the stored lens description is encrypted, and instrumentation carries no description text.
+- **Verification:** The lens tests pass, and a lens created in the dummy app changes the ordering of an intent query that uses it.
+
 
 ## Verification Contract
 
