@@ -314,8 +314,14 @@ class SuppliedLabelsTest < Truffler::TestCase
     assert_includes request.questions["intent__anger"]["instructions"], %("anger" (anger))
   end
 
-  test "a failed supplied answer leaves the record pending at backfill priority, and backfill retries it for free" do
-    record = feedback!(sentiment: "furious", anger: 0.4)
+  def flaky_sentiment!
+    replace_label(SuppliedFeedback, LabelDefinition.new(:sentiment, :choice, options: %w[positive neutral negative],
+      from: ->(record) { record.sentiment == "boom" ? raise("classifier unavailable") : record.sentiment }, watch: [ :sentiment ]))
+  end
+
+  test "a raising supplied answer leaves the record pending at backfill priority, and backfill retries it for free" do
+    flaky_sentiment!
+    record = feedback!(sentiment: "boom", anger: 0.4)
     label(SuppliedFeedback, budget: NoBudget.new)
 
     state = Truffler::Records::RecordState.find_by!(record_id: record.id)
@@ -329,12 +335,62 @@ class SuppliedLabelsTest < Truffler::TestCase
     assert_equal "labeled", state.reload.status
   end
 
-  test "a supplied answer that keeps failing ends failed after max_attempts" do
+  test "a supplied answer that keeps raising ends failed after max_attempts" do
+    flaky_sentiment!
     Truffler.config.max_attempts = 2
-    record = feedback!(sentiment: "furious", anger: 0.4)
+    record = feedback!(sentiment: "boom", anger: 0.4)
     label(SuppliedFeedback, budget: NoBudget.new)
     Truffler::Labeling::Backfill.new(SuppliedFeedback).run
 
     assert_equal [ "failed", 2 ], Truffler::Records::RecordState.find_by!(record_id: record.id).then { |s| [ s.status, s.attempts ] }
+  end
+
+  test "0.1.5: an out-of-shape supplied answer settles: nothing stored for that label, the record labeled, one notification" do
+    record = feedback!(sentiment: "furious", anger: 0.4)
+
+    payloads = capture_notifications("truffler.supplied_label_failed") { label(SuppliedFeedback, budget: NoBudget.new) }
+
+    state = Truffler::Records::RecordState.find_by!(record_id: record.id)
+    assert_equal [ "labeled", 0, nil ], [ state.status, state.attempts, state.last_error_class ]
+    assert_equal({ "anger" => 0.4 }, labels_of(record))
+    assert_equal [ [ "sentiment", "Truffler::InvalidSuppliedAnswer", true ] ],
+      payloads.map { |payload| payload.values_at(:label_key, :error_class, :permanent) }
+  end
+
+  test "0.1.5: backfill never re-claims a record whose supplied answer is out of shape" do
+    record = feedback!(sentiment: "furious", anger: 0.4)
+    label(SuppliedFeedback, budget: NoBudget.new)
+
+    payloads = capture_notifications("truffler.supplied_label_failed") do
+      2.times { assert_equal 0, Truffler::Labeling::Backfill.new(SuppliedFeedback).run.labeled }
+    end
+
+    assert_empty payloads
+    assert_equal "labeled", Truffler::Records::RecordState.find_by!(record_id: record.id).status
+  end
+
+  test "0.1.5: an answer that turns out of shape clears the stored value, and a valid one later is written" do
+    record = feedback!(sentiment: "positive")
+    label(SuppliedFeedback, budget: NoBudget.new)
+    assert_equal 1.0, labels_of(record)["sentiment:positive"]
+
+    record.update!(sentiment: "furious")
+    flush
+    assert_nil labels_of(record)["sentiment:positive"]
+
+    record.update!(sentiment: "negative")
+    flush
+    assert_equal 1.0, labels_of(record)["sentiment:negative"]
+    assert_equal "labeled", Truffler::Records::RecordState.find_by!(record_id: record.id).status
+  end
+
+  test "0.1.5: truffler_refresh_labels! with an out-of-shape answer stores nothing for that label and does not raise" do
+    record = feedback!(sentiment: "positive", anger: 0.2)
+    label(SuppliedFeedback, budget: NoBudget.new)
+    record.update_columns(sentiment: "furious")
+
+    assert_nothing_raised { record.truffler_refresh_labels! }
+
+    assert_equal({ "anger" => 0.2 }, labels_of(record).except("actionability"))
   end
 end

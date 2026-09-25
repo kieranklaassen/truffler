@@ -153,7 +153,10 @@ end
 | `:choice` | one option string (meaning 1.0 for it), or `{ option => probability }` | one row per option, `label:option`; options left out store 0.0 |
 | `:score` | a level index into `legend:` | `index / (levels - 1)`, as for Jev scores |
 
-`nil` stores nothing: the record reads as missing that label, not as 0. An answer out of shape (an undeclared option, a probability outside 0..1, a level past the legend) or a `from:` that raises stores nothing for that label and emits `truffler.supplied_label_failed` with the label key and error class. Rows already stored keep serving until the next good write.
+`nil` stores nothing: the record reads as missing that label, not as 0. Both kinds of failure emit `truffler.supplied_label_failed` with the label key, the error class, and `permanent`:
+
+- An answer out of shape (an undeclared option, a probability outside 0..1, a level past the legend) is permanent (`permanent: true`). It is treated like `nil`: nothing is stored for that label, earlier rows are cleared, and the record is marked labeled, so backfills do not claim it again. A later valid answer, through `watch:` or `truffler_refresh_labels!`, is written as usual.
+- A `from:` that raises is transient (`permanent: false`). The record stays pending at backfill priority and is retried for free, then marked failed after `max_attempts`. Rows already stored keep serving until the next good write.
 
 Supplied labels never reach Jev. They are never in a labeling request, take no budget slot, cost nothing, and do not count toward a lens or backfill spend cap. A flush or backfill where only supplied labels are stale makes no Jev call. The labeling job writes them before it asks Jev anything, so a Jev outage or a budget denial never holds them back. Otherwise they behave like asked labels: same `truffler_labels` rows, the same filters, boosts, chips, and label vectors, and query encoding asks Jev how a query uses them (using `description:`), within the one encoding call per query.
 
