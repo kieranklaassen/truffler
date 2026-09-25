@@ -25,5 +25,12 @@ module Truffler
     teardown do
       Test::Database.clean
     end
+
+    def capture_notifications(pattern)
+      payloads = []
+      callback = ->(_name, _start, _finish, _id, payload) { payloads << payload }
+      ActiveSupport::Notifications.subscribed(callback, pattern) { yield }
+      payloads
+    end
   end
 end

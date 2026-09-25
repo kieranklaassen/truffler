@@ -54,6 +54,7 @@ Jev's constraints set the shape. It costs $0.042 per million input tokens and ou
 - **Labels are stored as plain numbers, even for encrypted models.** SQL filters and boosts stay in milliseconds. They reveal topic-level information, comparable to plaintext embeddings. (session-settled: user-directed — chosen over encrypted and coarse-bucketed labels: encrypted labels would force filtering in Ruby.) Governs R4, R5.
 - **The gem owns label storage, versioning, and backfill.** (session-settled: user-directed — chosen over app-managed columns: "apps don't have to think about it".) Governs R4, R6, R7.
 - **Embeddings are an optional recall source inside the gem.** Off by default; on for Cora; the benchmark decides for happyhappy. The gem can also reuse an embedding column the app already has. (session-settled: user-directed — chosen over bring-your-own-only and no embeddings: rerank can only improve what recall found, and Cora embeds only part of its mail.) Governs R10, R11.
+- **Rank with label vectors and text embeddings in one query.** Jev's answers form a named-dimension embedding per record, and the query becomes a weighted intent vector over the same labels. Results are ranked by weighted dot product after hard filters, blended with text-embedding similarity when embeddings are on. (session-settled: user-directed — chosen over separately ranked lists merged afterwards and label-only ranking: one round trip is fastest at tenant-scoped sizes.) Governs R13, R16.
 - **One account-wide Jev budget, rerank only on explicit action.** The request limit, not cost, caps throughput, so every Jev call shares one budget with a fixed priority. (session-settled: user-approved — chosen over rerank on every keystroke and per-feature budgets.) Governs R22, R26.
 - **In Cora, first-time intent queries are answered by Smart search.** With a cold cache the keystroke list offers the Smart search row instead of filling in or reshuffling when Jev's answer lands. (session-settled: user-directed — chosen over filling in results quietly and suggested chips: keeps the keystroke list stable and makes the explicit action the one path.) Governs R21, R38.
 - **Provider search is a backup, not the primary.** (session-settled: user-directed — chosen over Gmail-first as Cora does today.) Governs R19.
@@ -284,7 +285,7 @@ These are defaults chosen in pipeline mode. Each one is a tunable default or a r
   1. Start from the caller's relation and AND the tenant condition onto it.
   2. Apply encoding filters as `EXISTS` subqueries on `truffler_labels`.
   3. Gather candidates from the declared sources: keyword `LIKE` or a host callable, exact-match callables such as blind indexes, top-K vector neighbors, and label-only matches when the query is all label terms.
-  4. Score each candidate as a weighted sum of source hits, vector similarity (a `CASE` over the top-K ids), and label boosts from correlated subqueries.
+  4. Score each candidate per KTD20: the weighted label dot product, plus text similarity, plus source hits.
   5. Order by that score, then by the developer's `order` column (R18).
   Encodings and query vectors are read from the cache only (R12).
 - KTD9. **Query encoding is a fixed question set, and dates and numbers are never asked.** Each noul or score label gets a choice `filter | boost | ignore`. Each choice label also gets a choice among its options plus `none`. Each of the first 12 query tokens gets a choice `keyword | label_term | filler`. Tokens with digits, dates, quoted phrases, emails, or identifiers are classified locally as keywords or exact text and never sent as questions (R18). Thresholds and weights come from the declaration (R13, R16). (session-settled: user-directed — chosen over query-time-only scoring: speed and throughput; inherits the labeled Key Decision governing R1, R13, R14.)
@@ -298,6 +299,16 @@ These are defaults chosen in pipeline mode. Each one is a tunable default or a r
 - KTD17. **The benchmark ships inside the gem.** It consists of `Truffler::Benchmark` classes, a `truffler:bench` rake task, synthetic fixtures under `bench/`, and a params YAML exposing every R36 knob. It emits a JSON report that `ce-optimize` can read. Cassette replay is the default, and recording needs a live key (R32-R36).
 - KTD18. **Testing uses minitest on in-memory SQLite.** The test schema loads from the generator's migration template, so the shipped migration is exercised. Tests use the ActiveJob `TestAdapter`, an `ActiveSupport::Cache::MemoryStore`, fake clients, and test ActiveRecord encryption keys. The test helper makes the default client raise if a test forgets to install a fake. Postgres and pgvector tests are skipped unless `TRUFFLER_PG_URL` is set, so they are not run in this PR.
 - KTD19. **CI runs on GitHub Actions.** One workflow runs `rubocop` (`rubocop-rails-omakase`, matching Kieran's apps), then the tests and a benchmark replay smoke run, on Ruby 3.2, 3.3, and 3.4 against the latest Rails 8.x gems. sqlite-vec neighbor tests run only when the extension loads.
+- KTD20. **Hybrid scoring in one query: label vectors plus text similarity.** Each record's labels form an embedding with named dimensions, the QA-Emb pattern (arXiv 2405.16714).
+  - **Stored vector:** after labeling, the gem writes a `label_vector` (floats in the vocabulary version's sorted label-key order, choice options expanded) to `truffler_embeddings`, beside the optional text vector.
+  - **Query vector:** query encoding (KTD9) yields a sparse intent vector. Each label's weight is its declared weight times Jev's decision: filter or boost gives the weight, ignore gives 0.
+  - **Score:** `w_label × Σ q_k·v_k + w_text × text_similarity + source-hit terms`, where the blend weights come from the declaration and are tuned by the benchmark (R36).
+  - **Dot product, not cosine,** because cosine divides out magnitude and lets records high on unrelated labels outrank the one label the query asked for.
+  - **Hard filters** (must-have labels) stay `EXISTS` subqueries and run before scoring.
+  - **Label term in SQL:** the label term is computed as `SUM(weight × value)` over `truffler_labels` rows for the query's nonzero keys. This is sparse, portable, and fast, because a query touches a handful of labels.
+  - **Text term:** with the `neighbor` store (pgvector, or SQLite with sqlite-vec), the text similarity is computed in the same `SELECT` over the tenant's filtered rows as an exact scan. An approximate (HNSW) index is an optional per-model setting, recommended only above about 100,000 rows per tenant. The `ruby` store keeps KTD8's top-K `CASE` fallback for tests and small sets.
+  - **Stored `label_vector` use:** it serves ANN search when a model declares many dimensions, plus inspection and benchmarking.
+  - (session-settled: user-directed — chosen over separately ranked lists merged afterwards and label-only ranking: one round trip is fastest at tenant-scoped sizes.)
 
 ### Resolved Planning Questions
 
@@ -664,6 +675,7 @@ The gem ships no React components. Each host-rendered requirement maps to a gem-
   3. A demoted acquisition sets the rows' priority to backfill and leaves them pending.
   4. On `ClientError` or `Budget` exhaustion the rows return to `pending`, `attempts` increments, and the job retries with polynomial backoff. After `max_attempts` the rows become `failed` with `last_error_class`.
   5. Encrypted attributes are read through the model inside the builder only. Nothing derived from text is persisted except label numbers.
+  - Per KTD20, after labels are stored the pipeline writes the record's `label_vector` (sorted label-key order for the vocabulary version) to `truffler_embeddings`. A vocabulary change rebuilds vectors from `truffler_labels` without calling Jev.
 - **Test scenarios:**
   - Creating a record enqueues one `LabelFlushJob` whose arguments contain no field values. Performing the job stores one row per noul, one per choice option, and one per score, with fingerprints.
   - With `grouping_window: 2.seconds`, three records from one tenant created within the window produce one Jev request with tags r001-r003.
@@ -715,6 +727,7 @@ The gem ships no React components. Each host-rendered requirement maps to a gem-
      - `neighbor` uses `nearest_neighbors(… distance: "cosine")`;
      - `column` queries the host model's column through neighbor.
   5. The adapter is chosen from config (`:auto` picks neighbor when loadable).
+  6. Per KTD20, text vectors share `truffler_embeddings` with the `label_vector`. The neighbor store also exposes a SQL similarity expression, so U8 can score text inline in one query. An approximate index is opt-in per model.
 - **Test scenarios:**
   - With embeddings on, creating a record enqueues `EmbedJob`, and performing it stores one vector of 256 floats with no source text anywhere in the row.
   - `RubyStore#nearest` returns the most similar record first and never returns another tenant's rows.
@@ -737,12 +750,15 @@ The gem ships no React components. Each host-rendered requirement maps to a gem-
   4. `Result` exposes `records`, `chips`, `invite_row`, `encoding_status` (`:cached`, `:pending`, `:none`), `watermark`, `explicit_action`, `smart_ranking_paused?`, and `promoted_ids(run)`.
   5. `jev_new_matches_count` counts the same query restricted to `arrived_at > since`. The `arrived_at` column is declarable and defaults to `created_at`.
   6. Each search emits `truffler.search` with the model, counts, sources used, and latency. On encrypted models it also carries the query digest but never the query text.
+  7. Scoring follows KTD20. The label term is a SQL `SUM(weight × value)` over the intent vector's nonzero keys, and the text term is inline when the vector store supports SQL. `Result` exposes each record's per-label contributions for debugging.
 - **Test scenarios:**
   - `Email.truffler("x", tenant: nil, scope: Email.all, user:)` raises `MissingScope`, and so does passing another model's relation.
   - A record outside the passed scope, or in another tenant, never appears, even when it matches the keyword and the labels.
   - Covers AE1. With a cached encoding that filters `needs_action` at 0.6, typing the query returns only records with `needs_action >= 0.6`, ordered by `received_at desc`. The result has a `needs_action` chip, and the fake client records zero calls.
   - Passing `suppressed: ["needs_action"]` removes that filter and its chip and widens the results.
   - A boost weight of 2.0 on `urgent` ranks a matching record with urgent 0.9 above an otherwise-equal record with urgent 0.1.
+  - Dot product, not cosine: for an intent on `urgent` only, a record with urgent 0.9 and five other labels at 0.9 does not lose to a record with urgent 0.6 and all other labels at 0 (the cosine would reverse them).
+  - With embeddings on and a cached query vector, the score blends label and text terms by the declared weights, and the ordering changes as expected when `w_text` goes from 0 to 1.
   - Covers AE2. With the client raising and no cached encoding, results still come from keyword and exact sources, and `encoding_status` is `:pending` or `:none`.
   - Covers AE7 (recall). On a model with the Ruby vector store and a cached query vector, a record with no keyword overlap is returned through vector recall. The sender exact source contributes only when the query contains that sender's exact address.
   - Fewer than 3 results produce an `invite_row` with reason `:weak`, zero results give `:empty`, and a model with no local text source and no cached encoding gives `:encoding_pending`.
@@ -761,6 +777,7 @@ The gem ships no React components. Each host-rendered requirement maps to a gem-
   2. The prefetch writes an in-flight marker with `unless_exist`. It stores the query payload in the cache, encrypted for encrypted models, and enqueues `EncodeQueryJob(cache_key)`.
   3. `Encoder` builds the KTD9 question set and acquires encode budget; a denial is a silent skip. It maps answers to an `Encoding` of filters, boosts, keyword tokens, and label-term tokens, using the declaration's thresholds, and caches the result with a TTL (default 7 days).
   4. Query embedding (when embeddings are on) runs in the same job and caches the vector.
+  4a. The `Encoding` also carries the sparse intent vector of KTD20 (label key to weight), which U8 uses for the label term.
   5. `Encoder#await(cache_key, deadline:)` polls the cache until the deadline. The Smart job (U10) uses it.
 - **Test scenarios:**
   - For a model with labels `needs_action` (noul) and `category` (choice), the encoding request has one `filter|boost|ignore` choice per label, a category option choice with `none`, and one token choice per non-numeric token up to 12.
