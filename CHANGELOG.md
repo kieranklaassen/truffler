@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.5]
+
+Fixes from the Cora integration at Postgres scale, and two from happyhappy's 0.1.4 upgrade.
+
+- Tenant-scoped indexing: `index_if ->(record) { ... }` and `index_scope ->(relation) { ... }` in `truffler do`, plus `config.tenant_enabled = ->(model, tenant_key) { ... }`. Records outside them, or in a disabled tenant, are never labeled, embedded or backfilled. The after-commit hooks, `Labeling::Queue`, the labeler, both backfills, lens backfills, `LabelFlushJob`, `ResumeJob` and `EmbedJob` all honor them. `BackfillJob` takes `tenant_key:`, over-cap demotion and `ResumeJob` enqueue one job per tenant, and `truffler:backfill` and `truffler:status` accept `TENANT=`.
+- `Embeddings::Backfill` pages per tenant with a limited `NOT EXISTS` anti-join instead of a whole-table `NOT IN`.
+- The backfill spend ledger is per tenant for tenant-scoped models (`truffler_backfill_spends.tenant_key`; `config.backfill_spend_cap_scope = :tenant`, the default, or `:app`), so `backfill_spend_cap` applies to each tenant. Existing installs: `rails g truffler:upgrade && rails db:migrate`.
+- `rails g truffler:upgrade` is safe to rerun. It skips migrations already present or applied and writes only the missing ones, with no conflicts.
+- Choice labels store a row only for options at or above `config.choice_min_probability` (default 0.05; `nil` stores all), plus the most likely option. Missing options read as 0.0 everywhere, and no migration is needed.
+- An out-of-shape `from:` answer settles: nothing is stored for that label, the record is marked labeled, and `truffler.supplied_label_failed` fires with `permanent: true`. A raising `from:` still retries and fails after `max_attempts`.
+- Postgres: upserts no longer assign `updated_at` twice (Rails 8.1 raised `PG::SyntaxError` on every live enqueue and embedding write). The suite now also runs on Postgres with pgvector in CI (`TRUFFLER_DATABASE_URL`). As a side effect, re-enqueuing an already pending row no longer refreshes its `updated_at`.
+- Keystroke SQL at scale on Postgres. A `keyword` or `exact` callable that returns a relation runs once as `id = ANY(ARRAY(subquery))` instead of a hashed `IN` over every tenant row; returning an Array of ids is the documented fast path. Label-only and filtered searches add up label scores in one grouped subquery joined on `record_id` instead of a subquery per row: 120 ms p50 before, 51 ms after, for 50k records. New installs get `INCLUDE (record_id)` on `index_truffler_labels_for_search`, and `truffler:upgrade` adds it on existing Postgres installs. On Postgres, `NeighborStore` scores text from the tenant's top-K neighbors (`ORDER BY embedding <=> q LIMIT k`, default 200); `NeighborStore.new(k:, top_k:)` is new, and `config.vector_store` accepts a store instance. Records outside the top `k` get no text score. The README covers `SET LOCAL jit = off` for the keystroke transaction.
+- New `invite_on_pending_encoding` declaration (default true): a model with a `keyword` source, such as a blind index, still shows the `:encoding_pending` Smart search row while a first-time query's encoding is in flight. `Result#local_weak?` keeps the backup provider off when the keyword list is strong.
+- New `Truffler::Clients::Evaluator` for clients that read `schema.questions` and return an evaluation object without `to_h`, such as Cora's `TypeSafeClient`. The Cora checklist in `docs/host-integration.md` now shows it instead of the broken `Callable` line.
+- A query word that names any declared label key, option key or option search-text word, applied or not, is never dropped as filler. `email` and `emails` are no longer default `config.filler_words`.
+- Removing the last label chip no longer makes filler nouns required keywords while a time phrase still applies.
+- A lens backfill never pages disabled tenants (filtered in SQL, so a capped `LensBackfillJob` cannot refetch them forever), and the labeler never deletes a disabled tenant's state rows; it returns them to pending at backfill priority, so re-enabling relabels only what is stale.
+- Removing chips keeps declared label and option words (option search text included) as keywords, the same as the encoder and the cold-cache path.
+- `truffler:status` and `Backfill.status(model, tenant_key:)` count only records inside `index_scope` and enabled tenants, and only their state rows, so a finished partial rollout reports nothing missing or pending.
+
 ## [0.1.4]
 
 Fixes from happyhappy production.

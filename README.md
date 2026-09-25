@@ -51,6 +51,10 @@ bin/rails db:migrate
 
 The migration creates only that table and skips it if it already exists. Until you run it, backfills log one warning and cap spend per run, as 0.1.1 did.
 
+0.1.5 adds `truffler_backfill_spends.tenant_key` for per-tenant spend ledgers. The same `truffler:upgrade` command writes that migration. Until you run it, every tenant shares the model's app-wide ledger and a warning is logged once.
+
+`truffler:upgrade` is safe to rerun. It skips any migration already in `db/migrate` or already applied to the database, and writes only the missing ones.
+
 Truffler digests user keys and query misses with `secret_key_base`. Rails supplies it automatically; outside Rails, set `config.secret_key_base`.
 
 ## Declaring a model
@@ -84,6 +88,7 @@ class Email < ApplicationRecord
     surface :inbox, explicit_action: :enter     # :enter, :key, or :row
     ranking label: 1.0, text: 1.0, keyword: 0.5, exact: 1.0
     weak_below 3                                # fewer keystroke results than this counts as weak
+    invite_on_pending_encoding true             # Smart search row while a first-time query's encoding is in flight
   end
 end
 ```
@@ -94,9 +99,10 @@ Here is what each option does:
 - Choice `options:` may be a callable of the tenant key, which gives each tenant its own vocabulary. A tenant it gives no options (`{}` or nil) simply lacks the label: it is neither asked nor encoded there. The option name `truffler:none` is reserved (see `Truffler::NO_OPTION` below).
 - An option's value may be `{ description: "...", search: "..." }` instead of a plain description, e.g. `options: { "prod-a1" => { description: "Cora, the AI email assistant that drafts replies...", search: "Cora email assistant" } }`. Jev labels records with the description; query words are matched against the short search text (else the description), and the request state's `option_names` carries it. A per-tenant callable may return the same shape. Editing a search text never stales labels or triggers a backfill; it only changes the query-encoding cache key, so queries are re-encoded.
 - `watch :column, ...` relabels every label when one of those columns changes. Saving a record only relabels on columns that changed, so a `reads` field backed by a method (a conversation built from messages, say) needs the columns it is built from in `watch`.
-- `keyword` also accepts a single callable, `->(scope, tokens) { relation }`.
+- `keyword` also accepts a single callable, `->(scope, tokens) { relation }`. It, and each `exact` callable, may return an Array of ids instead of a relation, which is far faster on a large tenant (see [Keystroke search at scale](#keystroke-search-at-scale)).
 - `embeddings column: :my_vector` searches a vector column you maintain yourself. Truffler never writes it.
 - `embeddings` refuses to send encrypted fields to the embedding provider unless you pass `allow_encrypted: true`.
+- `invite_on_pending_encoding` (default true) shows the Smart search row with reason `:encoding_pending` while a query's first encoding is in flight, even when a `keyword` source matched. A model with no `keyword` source always does. Pass `false` to invite only on weak or empty results.
 
 `label key, type, **options` takes:
 
@@ -149,7 +155,10 @@ end
 | `:choice` | one option string (meaning 1.0 for it), or `{ option => probability }` | one row per option, `label:option`; options left out store 0.0 |
 | `:score` | a level index into `legend:` | `index / (levels - 1)`, as for Jev scores |
 
-`nil` stores nothing: the record reads as missing that label, not as 0. An answer out of shape (an undeclared option, a probability outside 0..1, a level past the legend) or a `from:` that raises stores nothing for that label and emits `truffler.supplied_label_failed` with the label key and error class. Rows already stored keep serving until the next good write.
+`nil` stores nothing: the record reads as missing that label, not as 0. Both kinds of failure emit `truffler.supplied_label_failed` with the label key, the error class, and `permanent`:
+
+- An answer out of shape (an undeclared option, a probability outside 0..1, a level past the legend) is permanent (`permanent: true`). It is treated like `nil`: nothing is stored for that label, earlier rows are cleared, and the record is marked labeled, so backfills do not claim it again. A later valid answer, through `watch:` or `truffler_refresh_labels!`, is written as usual.
+- A `from:` that raises is transient (`permanent: false`). The record stays pending at backfill priority and is retried for free, then marked failed after `max_attempts`. Rows already stored keep serving until the next good write.
 
 Supplied labels never reach Jev. They are never in a labeling request, take no budget slot, cost nothing, and do not count toward a lens or backfill spend cap. A flush or backfill where only supplied labels are stale makes no Jev call. The labeling job writes them before it asks Jev anything, so a Jev outage or a budget denial never holds them back. Otherwise they behave like asked labels: same `truffler_labels` rows, the same filters, boosts, chips, and label vectors, and query encoding asks Jev how a query uses them (using `description:`), within the one encoding call per query.
 
@@ -168,10 +177,16 @@ The default client is `Truffler::Clients::RubyLLMTypeSafe`. It needs ruby_llm 2 
 If you already have a TypeSafe client, wrap it in `Truffler::Clients::Callable`. The wrapped object must respond to `evaluate(state:, schema:)`, and may also accept `model:`. It returns either the answers hash or `{"answers" => ..., "model" => ..., "usage" => {"input_tokens" => ...}}`:
 
 ```ruby
-config.client = Truffler::Clients::Callable.new(TypeSafeClient.new)
+config.client = Truffler::Clients::Callable.new(MyJevClient.new)
 ```
 
 `schema:` holds the questions in TypeSafe wire shape. When a response carries no token count, Truffler estimates it from the request size and flags the estimate. Errors reach you as `Truffler::ClientError`, carrying only the HTTP status and the error class name.
+
+If your client takes a schema object (it calls `schema.questions`) and returns an evaluation object with `answers`, `model`, and `input_tokens` readers rather than a hash, use `Truffler::Clients::Evaluator` instead. For any other shape, subclass `Truffler::Clients::Base` and implement `perform` (see [docs/host-integration.md](docs/host-integration.md)).
+
+```ruby
+config.client = Truffler::Clients::Evaluator.new(TypeSafeClient.new)
+```
 
 ## Keystroke search
 
@@ -184,7 +199,7 @@ result = Email.truffler(params[:q], tenant: Current.account.id, scope: Current.a
 
 A keystroke search makes no network call. It reads the query encoding and query vector from the cache. When the cache misses, it enqueues `EncodeQueryJob`, and the next keystroke or reload picks up the result.
 
-Query encoding sends Jev the label vocabulary (each label's description and a choice label's option names) next to the query, and asks for each label whether the query filters on it, prefers it, or ignores it, plus the role of each word. A choice label's option question also offers `Truffler::NO_OPTION` (`"truffler:none"`), meaning the query names none of its options, so a host option literally called `none` stays filterable. Word roles are then checked locally: a word that names a label the query applies (its key, a word of its key, or the chosen option key, ignoring case and plurals or sharing their first three letters when both words have four letters or more, so "angry" names `anger`; or, matched exactly, a word of that option's display name or description) counts as naming the label, and common stopwords and `config.filler_words` (generic nouns such as "customers", "users", "emails") are dropped. They are kept only when dropping them would leave no keyword, no applied label, and no time phrase, so "customers in the last 3 hours" lists the window's records while a lone "customers" still searches text; the same rule applies before the encoding is cached. When the encoding applies a label filter, the filter decides which records match and keyword hits only rank them; without one, the remaining keywords must match.
+Query encoding sends Jev the label vocabulary (each label's description and a choice label's option names) next to the query, and asks for each label whether the query filters on it, prefers it, or ignores it, plus the role of each word. A choice label's option question also offers `Truffler::NO_OPTION` (`"truffler:none"`), meaning the query names none of its options, so a host option literally called `none` stays filterable. Word roles are then checked locally: a word that names a label the query applies (its key, a word of its key, or the chosen option key, ignoring case and plurals or sharing their first three letters when both words have four letters or more, so "angry" names `anger`; or, matched exactly, a word of that option's display name or description) counts as naming the label, and common stopwords and `config.filler_words` (generic nouns such as "customers", "users", "items") are dropped. A word that names any declared label (a word of its key, of an option key, or of an option's search text), applied or not, is never dropped as filler. Filler is kept only when dropping them would leave no keyword, no applied label, and no time phrase, so "customers in the last 3 hours" lists the window's records while a lone "customers" still searches text; the same rule applies before the encoding is cached. When the encoding applies a label filter, the filter decides which records match and keyword hits only rank them; without one, the remaining keywords must match.
 
 When the searcher removes a chip, the words that named only that label (or only labels that are now all removed) become keywords again, so removing the `urgent` chip from "urgent refunds" searches for both words. A word that named a label or option key only by shared prefix ("urgently" for `urgent`) also adds a small keyword score (a quarter of the keyword weight) while its label applies, ranking records whose text contains it higher without requiring it.
 
@@ -195,6 +210,7 @@ The returned `Truffler::Search::Result` exposes:
 - `records` and `ids`.
 - `chips`: `[{key:, label:, kind: :filter | :boost | :time, name:}]`.
 - `invite_row`: `{query:, reason: :weak | :empty | :encoding_pending}` or nil.
+- `local_weak?`: whether the list is too weak to stand alone (starts the backup provider). A pending encoding on a model with a `keyword` source invites Smart search without making the list weak.
 - `encoding_status`: `:cached`, `:pending`, or `:none`.
 - `watermark` and `new_matches_count`.
 - `explicit_action`: the surface's declared action.
@@ -206,6 +222,24 @@ For the "N new matches" row on a later request, pass the watermark back in:
 ```ruby
 Email.jev_new_matches_count(params[:q], tenant: account.id, scope: account.emails, user: current_user, since: Time.iso8601(params[:since]))
 ```
+
+### Keystroke search at scale
+
+The keystroke query is shaped so a large tenant (tens of thousands of records) stays fast on Postgres:
+
+- Return ids from `keyword` and `exact` callables when you can, e.g. `.limit(2_000).pluck(:id)` from a blind index. Ids become a literal `IN (...)` list. A returned relation is rendered as `id = ANY(ARRAY(subquery))` on Postgres (plain `IN (subquery)` elsewhere), so it runs once instead of as a hashed filter over every tenant row, but the id list is still faster.
+- Label-only and filtered searches, where every record past the tenant and filters is a candidate, read label scores from one grouped aggregate over `truffler_labels` joined on `record_id`, never a subquery per row. New installs get `index_truffler_labels_for_search` with `INCLUDE (record_id)`, which makes that aggregate an index-only scan. On an existing Postgres install, `bin/rails generate truffler:upgrade && bin/rails db:migrate` adds it (built concurrently, then the old index is dropped). It is optional: the grouped aggregate already replaces the per-row subquery, and the index only saves heap reads.
+- With embeddings on Postgres, text similarity comes from the tenant's top `k` neighbors (`ORDER BY embedding <=> q LIMIT k`), joined on `record_id`. An HNSW index on `truffler_embeddings.embedding` serves it. Records outside the top `k` score no text similarity; see `vector_store` under [Configuration](#configuration).
+- The plans these queries produce are costed high enough that Postgres JIT often compiles them, which can add 0.3 to 0.9 s to a query that runs in tens of milliseconds. Turn JIT off for the keystroke only:
+
+  ```ruby
+  result = Email.transaction do
+    Email.connection.execute("SET LOCAL jit = off")
+    Email.truffler(params[:q], tenant: account.id, scope: account.emails, user: current_user)
+  end
+  ```
+
+  `SET LOCAL` lasts until the transaction ends, so other queries keep JIT. `result.records` is loaded inside the block.
 
 ## Smart search and streaming
 
@@ -341,12 +375,12 @@ Set these in `Truffler.configure do |config| ... end`.
 | `max_field_chars`, `request_token_budget`, `max_questions_per_request` | 4,000, 48,000, 200 | Request packing limits. |
 | `queue_name` | `:default` | Queue for every Truffler job. |
 | `cost_per_million_tokens` | 0.042 | Jev input price, used in usage events and estimates. |
-| `backfill_spend_cap` | 5.0 | Dollar cap on backfill spend per model and vocabulary version, shared by `BackfillJob` chains, `ResumeJob` backfills, and `truffler:backfill` runs (see Backfill). `nil` disables it; for the rake task, `SPEND_CAP=none` does. Supplied labels cost nothing and are still written once it is reached. |
+| `backfill_spend_cap` | 5.0 | Dollar cap on backfill spend per model (per tenant for tenant-scoped models; see `backfill_spend_cap_scope`) and vocabulary version, shared by `BackfillJob` chains, `ResumeJob` backfills, and `truffler:backfill` runs (see Backfill). `nil` disables it; for the rake task, `SPEND_CAP=none` does. Supplied labels cost nothing and are still written once it is reached. |
 | `resume_pending_after` | 5 minutes | How long before `ResumeJob` treats work as stuck. |
 | `embedder` | `Embeddings::RubyLLMEmbedder.new` | Any `Embeddings::Embedder` subclass. The default calls `RubyLLM.embed`, which works on ruby_llm 1.x and 2. |
 | `embedding_cost_per_million_tokens` | 0.02 | Embedding price. |
-| `vector_store` | `:auto` | `:neighbor` (pgvector `<=>`, or sqlite-vec `vec_distance_cosine` when you load the extension), `:ruby` (exact cosine in Ruby), or `:auto` (neighbor when available, otherwise Ruby). A model declaring `embeddings column:` always reads its own column. |
-| `filler_words` | `customer(s) people person user(s) message(s) email(s) item(s) stuff thing(s)` | Generic nouns never required as keywords on their own (matched ignoring plurals). Replace the list or extend it (`config.filler_words += %w[ticket]`). |
+| `vector_store` | `:auto` | `:neighbor` (pgvector `<=>`, or sqlite-vec `vec_distance_cosine` when you load the extension), `:ruby` (exact cosine in Ruby), or `:auto` (neighbor when available, otherwise Ruby). Or a store instance, e.g. `Truffler::Embeddings::NeighborStore.new(k: 500)` or your own `VectorStore` subclass. On Postgres the neighbor store scores text from the tenant's top `k` (default 200) neighbors; `NeighborStore.new(top_k: false)` scores every row exactly. A model declaring `embeddings column:` always reads its own column. |
+| `filler_words` | `customer(s) people person user(s) message(s) item(s) stuff thing(s)` | Generic nouns never required as keywords on their own (matched ignoring plurals). Replace the list or extend it (`config.filler_words += %w[ticket]`). |
 | `encoding_prefetch` | `QueryEncoding::Prefetch.new` | Cache-miss hook, called as `call(model, query, cache_key:, tenant_key:, user_key:)`. |
 | `encoding_deadline` | 1.0 | Seconds a Smart run waits for an in-flight query encoding. |
 | `rerank_depth`, `rerank_chunk_size`, `rerank_max_field_chars` | 30, 10, 1,200 | Candidates reranked, candidates per Jev request, characters per field sent. |
@@ -358,6 +392,9 @@ Set these in `Truffler.configure do |config| ... end`.
 | `lenses.creators`, `lenses.authorize_lens`, `lenses.proposals` | `:developers`, nil, false | Lens policy (see Lenses). |
 | `lenses.spend_cap_usd`, `lenses.sample_size`, `lenses.max_questions`, `lenses.expire_after` | 1.0, 20, 8, 30 days | Lens limits. |
 | `lenses.generator`, `lenses.drafter_model`, `lenses.user_key` | `RubyLLMGenerator`, nil, `"User:42"` style | Drafting model seam and user key mapping. |
+| `tenant_enabled` | nil (every tenant) | `->(model, tenant_key) { ... }`, asked for tenant-scoped models only. A disabled tenant is never labeled, embedded, or backfilled (see Indexing only some tenants). |
+| `backfill_spend_cap_scope` | `:tenant` | `:tenant` keeps a spend ledger per tenant for tenant-scoped models, so `backfill_spend_cap` applies to each tenant. `:app` keeps one ledger per model. Unscoped models always use one. |
+| `choice_min_probability` | 0.05 | Choice labels store a row only for options at or above this probability, plus the most likely option. A missing option reads as 0.0 in filters, boosts, label vectors, and contributions. `nil` stores every option. No migration is needed: rows written earlier stay until their record is relabeled. |
 
 ## Jobs to schedule
 
@@ -396,9 +433,35 @@ truffler_expire_lenses:
 |---|---|
 | `SPEND_CAP=20` or `none` | Overrides `backfill_spend_cap` for this run. |
 | `MAX_DURATION=600` | Stops after that many seconds with `paused` and the cursor. Rerun to continue. |
-| `RESET_SPEND=1` | Zeroes the spend recorded for the current vocabulary version before starting. |
+| `RESET_SPEND=1` | Zeroes the spend recorded for the current vocabulary version before starting (every tenant's ledger when no `TENANT` is given). |
+| `TENANT=42` | Backfills only that tenant, against that tenant's ledger. `truffler:status` takes it too, to print that tenant's spend. |
 
 The spend cap holds across runs. Truffler records backfill spend per model and app-wide vocabulary version in `truffler_backfill_spends`, and reserves each request's estimate against the cap in SQL. A rerun, a `ResumeJob` backfill, and overlapping `BackfillJob` chains all draw on the same total, so together they stop at `backfill_spend_cap`. Changing the vocabulary (a reworded question, a new label, or an activated lens) starts a new total. Lens backfills are capped separately by each lens's `spend_cap_usd`. `BackfillJob` reschedules itself after a denial with the same backoff. In code, `Truffler::Labeling::Backfill.new(Email).run(wait: true, max_duration: 600)` does what the task does.
+
+For tenant-scoped models the ledger is per tenant (`backfill_spend_cap_scope :tenant`, the default), so the cap applies to each tenant. A whole-model run skips a tenant once its ledger reaches the cap, keeps labeling the others, and ends with `spend_cap_reached`. A tenant run (`TENANT=`, or `BackfillJob.perform_later("Email", tenant_key: "42")`) stops at that tenant's cap. `ResumeJob` and the flush job's over-cap demotion enqueue one `BackfillJob` per tenant.
+
+### Indexing only some tenants
+
+For a per-account rollout, or to leave some records out, declare which records Truffler indexes:
+
+```ruby
+truffler do
+  tenant :account_id
+  # ...
+  index_if ->(email) { !email.spam? }                  # single records: after-commit hooks, Queue, EmbedJob
+  index_scope ->(relation) { relation.where(spam: false) } # batch paths: backfills and sweeps
+end
+
+Truffler.configure do |config|
+  config.tenant_enabled = ->(model, tenant_key) { Account.search_enabled?(tenant_key) }
+end
+```
+
+- The after-commit label and embed hooks skip records that are not indexable: `index_if` rejects them or their tenant is disabled. No state row or job is created.
+- `Labeling::Backfill`, `Embeddings::Backfill`, and lens backfills page only over `index_scope` and skip disabled tenants. The labeler drops claimed records that are no longer indexable instead of labeling them.
+- `index_if` and `index_scope` should select the same records. Keep `index_scope` index-friendly, because backfills page over it.
+- The `ResumeJob` embedding sweep runs tenant by tenant over the enabled tenants that have records in `index_scope`. Each tenant pass is a `NOT EXISTS` anti-join limited to the sweep size, not a `NOT IN` over the table.
+- Stored labels of a tenant you disable stay in place and keep serving search. When you re-enable the tenant, run `truffler:backfill` with `TENANT=` for it.
 
 ## Privacy
 

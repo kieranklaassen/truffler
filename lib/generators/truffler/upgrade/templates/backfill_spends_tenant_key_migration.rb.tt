@@ -1,0 +1,25 @@
+class AddTenantKeyToTrufflerBackfillSpends < ActiveRecord::Migration<%= migration_version %>
+  def up
+    add_column :truffler_backfill_spends, :tenant_key, :string unless column_exists?(:truffler_backfill_spends, :tenant_key)
+    if index_name_exists?(:truffler_backfill_spends, "index_truffler_backfill_spends_on_ledger")
+      remove_index :truffler_backfill_spends, name: "index_truffler_backfill_spends_on_ledger"
+    end
+    unless index_name_exists?(:truffler_backfill_spends, "index_truffler_backfill_spends_on_tenant_ledger")
+      add_index :truffler_backfill_spends, [:record_type, :tenant_key, :vocabulary_version], unique: true,
+        name: "index_truffler_backfill_spends_on_tenant_ledger"
+    end
+    unless index_name_exists?(:truffler_backfill_spends, "index_truffler_backfill_spends_on_app_ledger")
+      add_index :truffler_backfill_spends, [:record_type, :vocabulary_version], unique: true, where: "tenant_key IS NULL",
+        name: "index_truffler_backfill_spends_on_app_ledger"
+    end
+  end
+
+  def down
+    execute "DELETE FROM truffler_backfill_spends WHERE tenant_key IS NOT NULL" if column_exists?(:truffler_backfill_spends, :tenant_key)
+    remove_index :truffler_backfill_spends, name: "index_truffler_backfill_spends_on_tenant_ledger", if_exists: true
+    remove_index :truffler_backfill_spends, name: "index_truffler_backfill_spends_on_app_ledger", if_exists: true
+    remove_column :truffler_backfill_spends, :tenant_key, if_exists: true
+    add_index :truffler_backfill_spends, [:record_type, :vocabulary_version], unique: true,
+      name: "index_truffler_backfill_spends_on_ledger", if_not_exists: true
+  end
+end

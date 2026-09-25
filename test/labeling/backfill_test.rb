@@ -152,7 +152,7 @@ class BackfillTest < Truffler::TestCase
     assert_equal [ :complete, 1 ], [ first.status, first.requests ]
     assert_equal [ :spend_cap_reached, 1 ], [ second.status, second.requests ]
     assert_equal 2, @fake.calls.size
-    ledger = Backfill.spend(Email)
+    ledger = Backfill.spend(Email, tenant_key: "1")
     assert_equal [ Email.polymorphic_name, 2 ], [ ledger.record_type, ledger.requests ]
     assert_in_delta cap, ledger.spent_usd, 1e-12
     assert_operator ledger.spent_usd, :<=, cap + 1e-12
@@ -180,8 +180,8 @@ class BackfillTest < Truffler::TestCase
     assert_equal [ :spend_cap_reached, :spend_cap_reached ], [ first.status, overlap.status ]
     assert_equal 3, nested.calls.size
     assert_equal 3, first.requests + overlap.requests
-    assert_equal 3, Backfill.spend(Email).requests
-    assert_operator Backfill.spend(Email).spent_usd, :<=, cap + 1e-12
+    assert_equal 3, Backfill.spend(Email, tenant_key: "1").requests
+    assert_operator Backfill.spend(Email, tenant_key: "1").spent_usd, :<=, cap + 1e-12
   end
 
   test "0.1.2: a vocabulary change starts a new ledger" do
@@ -207,9 +207,9 @@ class BackfillTest < Truffler::TestCase
     hide_states(create_emails(2))
     assert_equal :spend_cap_reached, Backfill.new(Email, spend_cap: cap).run.status
 
-    Backfill.reset_spend!(Email)
+    Backfill.reset_spend!(Email, tenant_key: "1")
 
-    assert_equal [ 0.0, 0 ], [ Backfill.spend(Email).spent_usd, Backfill.spend(Email).requests ]
+    assert_equal [ 0.0, 0 ], [ Backfill.spend(Email, tenant_key: "1").spent_usd, Backfill.spend(Email, tenant_key: "1").requests ]
     assert_equal :complete, Backfill.new(Email, spend_cap: cap).run.status
   end
 

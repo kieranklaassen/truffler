@@ -223,7 +223,7 @@ module Truffler
         failures = @dataset.injections.filter_map do |injection|
           clean = stored[injection.clean_id]
           twin = stored[injection.record.id]
-          changed = (clean.keys | twin.keys).reject { |key| Metrics.agree?(clean[key], twin[key], tolerance) }
+          changed = (clean.keys | twin.keys).reject { |key| Metrics.agree?(clean.fetch(key, 0.0), twin.fetch(key, 0.0), tolerance) }
           next if changed.empty?
 
           { "fixture" => injection.id, "clean_id" => injection.clean_id, "twin_id" => injection.record.id,

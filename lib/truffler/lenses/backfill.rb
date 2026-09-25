@@ -37,6 +37,8 @@ module Truffler
 
           attempted.concat(records.map(&:id))
           records.group_by { |record| definition.tenant_key_for(record) }.each do |tenant_key, slice|
+            next unless definition.tenant_enabled?(tenant_key)
+
             stop = label(slice, tenant_key)
             return result(stop) if stop
           end
@@ -70,22 +72,38 @@ module Truffler
       # lens row.
       def page(attempted)
         pk = model.primary_key
-        scope = model.all
-        scope = scope.where(definition.tenant_column => lens.tenant_key) if definition.scoped? && lens.tenant_key
+        scope = definition.index_relation(model.all)
+        if definition.scoped? && lens.tenant_key
+          return [] unless definition.tenant_enabled?(lens.tenant_key)
+
+          scope = scope.where(definition.tenant_column => lens.tenant_key)
+        elsif definition.scoped? && Truffler.config.tenant_enabled
+          scope = scope.where(definition.tenant_column => enabled_tenants)
+        end
         scope = scope.where.not(pk => attempted) if attempted.any?
         scope.where(Arel.sql(stale_sql)).reorder(definition.arrival_order).limit(batch_size).to_a
       end
 
+      # Tenants in index_scope that config.tenant_enabled allows, looked up
+      # once per run, so disabled tenants are never paged (and never refetched
+      # by the next LensBackfillJob).
+      def enabled_tenants
+        @enabled_tenants ||= definition.index_relation(model.all).reorder(nil).distinct.pluck(definition.tenant_column)
+          .select { |tenant_key| definition.tenant_enabled?(tenant_key.to_s) }
+      end
+
+      # Stale unless every lens label has a row under its current fingerprint;
+      # a choice label stores only some of its options.
       def stale_sql
-        expected = lens.labels.values.flat_map do |label|
-          print = Lenses.fingerprint(label.question)
-          label.storage_keys.map { |key| ActiveRecord::Base.sanitize_sql_array([ "(label_key = ? AND fingerprint = ?)", key, print ]) }
-        end
         pk = "#{model.quoted_table_name}.#{model.connection.quote_column_name(model.primary_key)}"
-        ActiveRecord::Base.sanitize_sql_array([
-          "(SELECT COUNT(*) FROM #{LABELS} WHERE #{LABELS}.record_type = ? AND #{LABELS}.record_id = #{pk} " \
-          "AND (#{expected.join(' OR ')})) < ?", model.polymorphic_name, expected.size
-        ])
+        current = lens.labels.values.map do |label|
+          ActiveRecord::Base.sanitize_sql_array([
+            "EXISTS (SELECT 1 FROM #{LABELS} WHERE #{LABELS}.record_type = ? AND #{LABELS}.record_id = #{pk} " \
+            "AND #{LABELS}.label_key IN (?) AND #{LABELS}.fingerprint = ?)",
+            model.polymorphic_name, label.storage_keys, Lenses.fingerprint(label.question)
+          ])
+        end
+        "NOT (#{current.join(' AND ')})"
       end
 
       # Labels one tenant's records through the labeler, which asks only

@@ -178,7 +178,12 @@ class LabelingTasksTest < Truffler::TestCase
     fresh_emails(2)
     capture_io { @rake["truffler:backfill"].invoke("Email") }
 
-    output, = capture_io { @rake["truffler:status"].invoke("Email") }
+    per_tenant, = capture_io { @rake["truffler:status"].invoke("Email") }
+    @rake["truffler:status"].reenable
+    output, = with_env("TENANT" => "1") { capture_io { @rake["truffler:status"].invoke("Email") } }
+
+    assert_match(/spent\s+per tenant; pass TENANT=key/, per_tenant)
+    assert_match(/Email \(tenant 1\)/, output)
 
     version = Email.truffler_definition.vocabulary.version(all_users: true)
     assert_match(/spent\s+\$\d+\.\d{6} in 1 requests \(vocabulary #{version.first(12)}, cap \$5\.00\)/, output)

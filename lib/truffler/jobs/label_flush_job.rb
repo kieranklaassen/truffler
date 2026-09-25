@@ -4,7 +4,7 @@ module Truffler
     # and tenant key only. On a Jev or budget failure the claimed rows go back
     # to pending (or failed after max_attempts) and the job retries. Rows over
     # the tenant's live cap drop to backfill priority and a delayed backfill
-    # is scheduled for them.
+    # of that tenant is scheduled for them. A disabled tenant is left alone.
     class LabelFlushJob < ActiveJob::Base
       RETRYABLE = [ ClientError, BudgetExhausted, IncompleteAnswers ].freeze
 
@@ -18,6 +18,8 @@ module Truffler
 
         queue = Labeling::Queue.new(model)
         queue.clear_marker(tenant_key)
+        return unless model.truffler_definition.tenant_enabled?(tenant_key)
+
         states = queue.claim(tenant_key, priority: :live, limit: Truffler.config.batch_size)
         return if states.empty?
 
@@ -30,7 +32,7 @@ module Truffler
 
         if result.demoted
           queue.demote(states)
-          queue.schedule_backfill
+          queue.schedule_backfill(tenant_key)
         end
         queue.schedule(tenant_key) if queue.pending?(tenant_key, priority: :live)
       end

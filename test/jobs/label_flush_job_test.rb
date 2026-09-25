@@ -18,7 +18,7 @@ class LabelFlushJobTest < Truffler::TestCase
 
     perform_enqueued_jobs
 
-    assert_equal 6, Label.where(record_id: email.id).count
+    assert_equal 4, Label.where(record_id: email.id).count
     assert_equal "labeled", State.sole.status
   end
 
@@ -87,7 +87,7 @@ class LabelFlushJobTest < Truffler::TestCase
     assert_equal [ [ "pending", "backfill" ] ] * 3, State.pluck(:status, :priority)
   end
 
-  test "demoting over-cap rows schedules one delayed backfill" do
+  test "demoting over-cap rows schedules one delayed backfill per tenant" do
     Truffler.config.tenant_live_cap = 2
     3.times { create_email }
     3.times { create_email(account_id: 2) }
@@ -96,15 +96,18 @@ class LabelFlushJobTest < Truffler::TestCase
     freeze_time do
       Truffler::Jobs::LabelFlushJob.perform_now("Email", "1")
       Truffler::Jobs::LabelFlushJob.perform_now("Email", "2")
+      Truffler::Labeling::Queue.new(Email).schedule_backfill("1")
 
       backfill = enqueued_jobs.select { |job| job[:job] == Truffler::Jobs::BackfillJob }
-      assert_equal 1, backfill.size, "the marker deduplicates the backfill"
-      assert_equal [ "Email" ], backfill.sole[:args]
-      assert_in_delta 1.minute.from_now.to_f, backfill.sole[:at], 1
+      assert_equal %w[1 2], backfill.map { |job| job[:args].last["tenant_key"] }.sort, "the marker deduplicates each tenant's backfill"
+      assert(backfill.all? { |job| (job[:at] - 1.minute.from_now.to_f).abs <= 1 })
     end
 
     clear_enqueued_jobs
-    perform_enqueued_jobs { Truffler::Jobs::BackfillJob.perform_now("Email") }
+    perform_enqueued_jobs do
+      Truffler::Jobs::BackfillJob.perform_now("Email", tenant_key: "1")
+      Truffler::Jobs::BackfillJob.perform_now("Email", tenant_key: "2")
+    end
     assert_equal [ "labeled" ] * 6, State.pluck(:status)
   end
 

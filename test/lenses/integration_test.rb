@@ -54,7 +54,7 @@ class LensIntegrationTest < Truffler::TestCase
     label_claimed
 
     key = "lens:#{lens.id}:language"
-    assert_equal({ "#{key}:dutch" => 1.0, "#{key}:other" => 0.0 }, lens_rows(message, lens))
+    assert_equal({ "#{key}:dutch" => 1.0 }, lens_rows(message, lens))
     assert_equal vocabulary.fingerprints(tenant_key: "1")[key], Label.find_by!(label_key: "#{key}:dutch").fingerprint
     vector = Truffler::Embeddings::LabelVector.new(FeedMessage).read(message)
     assert_equal shorter.size + 2, vector.size
@@ -132,7 +132,7 @@ class LensIntegrationTest < Truffler::TestCase
 
     perform_enqueued_jobs(only: Truffler::Jobs::LensBackfillJob)
 
-    assert(messages.all? { |message| lens_rows(message, lens).size == 2 })
+    assert(messages.all? { |message| lens_rows(message, lens).size == 1 })
     assert_equal 3, Label.where("label_key LIKE ?", "lens:#{lens.id}:%").distinct.count(:record_id)
     assert_operator lens.reload.spent_usd, :>, 0
   end
@@ -148,7 +148,7 @@ class LensIntegrationTest < Truffler::TestCase
 
     assert_equal before, vocabulary.version(tenant_key: "1")
     assert_equal FeedMessage.truffler_definition.label_keys, vocabulary.labels_for(tenant_key: "1").keys
-    assert_equal 2, lens_rows(message, lens).size
+    assert_equal 1, lens_rows(message, lens).size
     assert_equal :inactive, Lenses::Backfill.new(lens.reload).run.status
   end
 
@@ -297,5 +297,37 @@ class LensIntegrationTest < Truffler::TestCase
     chip = Truffler::Search::Result.allocate.send(:chip, "lens:42:language:dutch", :filter)
     assert_equal "lens:42:language", chip[:label]
     assert_equal "Language: dutch", chip[:name]
+  end
+
+  test "0.1.5: an app lens backfill never claims or deletes a disabled tenant's state rows (Bugbot)" do
+    feed_message("Hallo", account: 1)
+    other = feed_message("Hallo", account: 2)
+    label_claimed(FeedMessage, "1")
+    label_claimed(FeedMessage, "2")
+    before = Truffler::Records::RecordState.where(tenant_key: "2").pluck(:id, :status, :vocabulary_version)
+    Truffler.config.tenant_enabled = ->(_model, tenant_key) { tenant_key != "2" }
+
+    lens = dutch_lens(scope: Scope.app)
+    answer_lens_language(lens)
+    Truffler::Lenses::Backfill.new(lens.reload).run
+
+    assert_equal before, Truffler::Records::RecordState.where(tenant_key: "2").pluck(:id, :status, :vocabulary_version)
+    assert_empty lens_rows(other, lens)
+    assert_not_empty Label.where("label_key LIKE ?", "lens:#{lens.id}:%").where.not(record_id: other.id)
+  end
+
+  test "0.1.5: an app lens backfill pages past newer disabled-tenant records instead of refetching them (Bugbot)" do
+    enabled = feed_message("Hallo", account: 1, at: 2.days.ago)
+    3.times { |index| feed_message("Hallo #{index}", account: 2, at: index.minutes.ago) }
+    label_claimed(FeedMessage, "1")
+    label_claimed(FeedMessage, "2")
+    Truffler.config.tenant_enabled = ->(_model, tenant_key) { tenant_key != "2" }
+
+    lens = dutch_lens(scope: Scope.app)
+    answer_lens_language(lens)
+    result = Truffler::Lenses::Backfill.new(lens.reload, batch_size: 1, max_batches: 1).run
+
+    assert_equal 1, result.labeled
+    assert_not_empty lens_rows(enabled, lens)
   end
 end

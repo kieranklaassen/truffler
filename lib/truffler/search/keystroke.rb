@@ -41,12 +41,12 @@ module Truffler
         explicit_action = surface_action
         cached = read_encoding
         status = encoding_status(cached)
-        encoding = with_time(visible_lenses_only(cached&.without(suppressed), record_usage: true))
+        encoding = visible_lenses_only(with_time(cached)&.without(suppressed, keep_words: label_words), record_usage: true)
         sql = sql(encoding)
         records = sql.relation(scope, limit: limit).to_a
         result = Result.new(records: records, query: query, encoding: encoding, encoding_status: status, watermark: watermark,
-          explicit_action: explicit_action, sources: sql.sources, invite_row: invite_row(records, cached),
-          weights: @weights, recount: ->(since) { count(since: since) })
+          explicit_action: explicit_action, sources: sql.sources, invite_row: invite_row(records, cached, status),
+          local_weak: local_weak?(records, cached), weights: @weights, recount: ->(since) { count(since: since) })
         instrument(result, started)
         result
       end
@@ -54,7 +54,7 @@ module Truffler
       # How many records the same search would return that arrived after
       # `since` (R25). Reads the cache only and never prefetches.
       def count(since:)
-        sql(with_time(visible_lenses_only(read_encoding&.without(suppressed)))).candidates(scope)
+        sql(visible_lenses_only(with_time(read_encoding)&.without(suppressed, keep_words: label_words))).candidates(scope)
           .where(model.arel_table[@definition.arrived_at_column].gt(since)).count
       end
 
@@ -83,6 +83,10 @@ module Truffler
 
       # Drops lens keys this searcher cannot see (another user's personal
       # lens, an expired lens) and counts a use of the rest (R42, R43).
+      def label_words
+        -> { Filler.label_words(@definition, tenant_key) }
+      end
+
       def visible_lenses_only(encoding, record_usage: false)
         lens_keys = encoding ? (encoding.intent_vector.keys | encoding.filters.keys | encoding.boosts.keys).select { |key| lens_id(key) } : []
         return encoding if lens_keys.empty?
@@ -90,11 +94,12 @@ module Truffler
         visible = Lenses.labels(model, tenant_key: tenant_key, user_key: user_key).values.map(&:lens_id).uniq
         hidden, shown = lens_keys.partition { |key| !visible.include?(lens_id(key)) }
         Lenses.record_usage(shown.map { |key| lens_id(key) }.uniq) if record_usage
-        encoding.without(hidden)
+        encoding.without(hidden, keep_words: label_words)
       end
 
       # The query's time phrase, resolved on this search's clock, unless the
-      # searcher removed its chip.
+      # searcher removed its chip. Attached before `without`, which keeps
+      # filler dropped while a time range still anchors the search.
       def with_time(encoding)
         phrase = query.time_phrase
         return encoding if phrase.nil? || suppressed.include?(TimeRange.key)
@@ -133,18 +138,27 @@ module Truffler
         Sql.new(model, tenant_key: tenant_key, query: query, encoding: encoding, vector: read_vector, weights: @weights)
       end
 
-      # R21: the Smart search row. A model with no local text search whose
-      # encoding is not cached yet invites the action even when a blind index
-      # matched, because intent queries resolve on the action there (AE10).
-      def invite_row(records, cached)
+      # R21: the Smart search row. A query whose encoding is not cached yet
+      # invites the action even when a blind index or keyword matched,
+      # because a first-time intent query resolves on the action (AE10): on a
+      # model with no local text search always, and with a `keyword` source
+      # while the encoding is in flight unless `invite_on_pending_encoding false`.
+      def invite_row(records, cached, status)
         return if query.blank?
 
-        reason =
-          if @definition.keyword.blank? && cached.nil? then :encoding_pending
-          elsif records.empty? then :empty
-          elsif records.size < @definition.weak_below then :weak
-          end
+        pending = cached.nil? && (@definition.keyword.blank? || (@definition.invite_on_pending_encoding && status == :pending))
+        reason = pending ? :encoding_pending : weak_reason(records)
         { query: query.raw.strip, reason: reason } if reason
+      end
+
+      def weak_reason(records)
+        if records.empty? then :empty
+        elsif records.size < @definition.weak_below then :weak
+        end
+      end
+
+      def local_weak?(records, cached)
+        !query.blank? && (weak_reason(records).present? || (@definition.keyword.blank? && cached.nil?))
       end
 
       def instrument(result, started)

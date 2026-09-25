@@ -21,7 +21,7 @@ The invite row's `reason` takes one of these values:
 
 - `:weak`: fewer results than the model's `weak_below` (default 3).
 - `:empty`: no results.
-- `:encoding_pending`: the model has no `keyword` source and the query has no cached encoding yet. Only Smart search can answer intent queries there, even if an `exact` source matched.
+- `:encoding_pending`: the query has no cached encoding yet. On a model with no `keyword` source this holds until the encoding lands, since only Smart search can answer intent queries there, even if an `exact` source matched. On a model with a `keyword` source it holds while the encoding is in flight (`encoding_status == :pending`), so a first-time intent query still gets the row when a blind index matched. Declare `invite_on_pending_encoding false` to invite only on `:weak` or `:empty` there. This reason alone does not make the local list weak, so it does not start the backup provider (`result.local_weak?`).
 
 ### Smart results (`run.to_h`, the `smart` prop)
 
@@ -90,12 +90,34 @@ happyhappy runs on SQLite with Inertia, ruby_llm 2, and `ruby_llm-typesafe`.
 Cora runs on Postgres with pgvector, uses ruby_llm 1.x with its own `TypeSafeClient`, has encrypted email models and a Gmail provider, and turns embeddings on.
 
 1. Add `gem "truffler"` and `gem "neighbor"`. Do not add `ruby_llm-typesafe`: the default client needs ruby_llm 2.
-2. Set `config.client = Truffler::Clients::Callable.new(TypeSafeClient.new)`. The client must respond to `evaluate(state:, schema:)`, and may also accept `model:` so the pin reaches it. Return the answers hash, or `{"answers", "model", "usage" => {"input_tokens"}}` so costs are real rather than estimated.
+2. Set `config.client = Truffler::Clients::Evaluator.new(TypeSafeClient.new)`. Cora's `TypeSafeClient#evaluate(state:, schema:, model:)` reads `schema.questions` and returns a `TypeSafe::Evaluation` (`answers`, `model`, `input_tokens`, no `to_h`), so `Clients::Callable`, which passes the question hash and expects a hash back, does not fit it. `Evaluator` hands over a schema object whose `questions` is the wire-shape hash, passes the model pin, and reads the evaluation's token count so costs are real rather than estimated. For a client of any other shape, subclass `Truffler::Clients::Base`:
+
+   ```ruby
+   class TypeSafe::TrufflerClient < Truffler::Clients::Base
+     WireSchema = Data.define(:questions) do
+       def empty? = questions.empty?
+     end
+
+     def initialize(client: TypeSafeClient.new)
+       @client = client
+     end
+
+     # Return {"answers", "model", "usage" => {"input_tokens"}}; only "answers" is required.
+     def perform(state:, questions:, model:)
+       evaluation = @client.evaluate(state: state, schema: WireSchema.new(questions: questions), model: model)
+       { "answers" => evaluation.answers, "model" => evaluation.model, "usage" => { "input_tokens" => evaluation.input_tokens } }
+     end
+   end
+
+   config.client = TypeSafe::TrufflerClient.new
+   ```
+
+   `Base#ask` validates the answers, instruments the call, and turns any error into `Truffler::ClientError`.
 3. Run `bin/rails generate truffler:install --record-id-type=<your id type> --vector-dimensions=256`, then migrate. Keep `vector_store :auto`, or set it to `:neighbor`. An HNSW index on `truffler_embeddings.embedding` is an optional follow-up migration.
 4. Encrypted models need some decisions:
    - Make sure Active Record encryption is configured, so that miss-log text and lens descriptions are stored as ciphertext rather than dropped.
    - `embeddings` refuses encrypted fields until you pass `allow_encrypted: true`. This is an explicit decision to send decrypted text to the embedding provider. Alternatively, fill your own vector column and declare `embeddings column:`.
-   - Encrypted bodies cannot use `keyword`. Use `exact` sources over deterministically encrypted columns (sender, thread id) for blind-index lookups. With no `keyword`, the invite row reads `:encoding_pending` until the query has an encoding.
+   - Encrypted bodies cannot use `keyword`. Use `exact` sources over deterministically encrypted columns (sender, thread id) for blind-index lookups. With no `keyword`, the invite row reads `:encoding_pending` until the query has an encoding. A blind-index `keyword` or `exact` callable should return an Array of ids (for example the newest 2,000), not a relation: on Postgres an id list is far faster. Run the keystroke with `SET LOCAL jit = off` (see the README's "Keystroke search at scale").
 5. `RubyLLMEmbedder` (`RubyLLM.embed`) and the lens `RubyLLMGenerator` both work on ruby_llm 1.x.
 6. Declare `provider :gmail, label: "Gmail", search: ->(query, tenant:, user:) { ... }`. Look up the Gmail connection from `tenant` and `user` inside the callable, and return only the fields the section renders. The results sit in the cache for `smart_run_ttl`.
 7. Map Cora's categories onto `choice` labels. Per-tenant categories can use `options: ->(tenant_key) { ... }`.

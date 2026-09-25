@@ -23,7 +23,7 @@ module Truffler
         return Result.new(labeled: 0, requests: 0, cost: 0.0, demoted: false) if states.empty?
 
         tenant_key = tenant_key_of(states)
-        records = load_records(states)
+        records = load_records(states, tenant_key)
         vocabulary = definition.vocabulary
         @labels = vocabulary.labels_for(tenant_key: tenant_key, all_users: true)
         fingerprints = vocabulary.fingerprints(tenant_key: tenant_key, all_users: true)
@@ -87,17 +87,31 @@ module Truffler
         tenants.first
       end
 
-      def load_records(states)
-        records = model.where(model.primary_key => states.map(&:record_id)).to_a
+      # Records deleted or outside index_scope / index_if lose their state
+      # rows instead of being labeled. A disabled tenant keeps its state rows:
+      # they go back to pending at backfill priority, so re-enabling it
+      # relabels only what is stale instead of every record.
+      def load_records(states, tenant_key)
+        unless definition.tenant_enabled?(tenant_key)
+          Records::RecordState.where(id: states.map(&:id))
+            .update_all(status: "pending", priority: "backfill", claimed_at: nil, updated_at: Time.current)
+          return []
+        end
+
+        records = definition.index_relation(model.where(model.primary_key => states.map(&:record_id))).to_a
+          .select { |record| definition.index_if.nil? || definition.index_if.call(record) }
         found = records.map { |record| record.id.to_s }
         gone = states.reject { |state| found.include?(state.record_id.to_s) }
         Records::RecordState.where(id: gone.map(&:id)).delete_all if gone.any?
         records
       end
 
+      # A label is current when it has stored rows and all carry its current
+      # fingerprint; choice labels store only some options (see sparse_choice).
       def stale_keys(stored, fingerprints, tenant_key, askable)
         askable.reject do |label|
-          label.storage_keys(tenant_key).all? { |key| stored[key] == fingerprints[label.key] }
+          present = label.storage_keys(tenant_key).select { |key| stored.key?(key) }
+          present.any? && present.all? { |key| stored[key] == fingerprints[label.key] }
         end.map(&:key)
       end
 
@@ -154,7 +168,8 @@ module Truffler
         case label.type
         when :noul then [ [ label.key, answers.noul(id) ] ]
         when :score then [ [ label.key, answers.score(id) ] ]
-        when :choice then label.options(tenant_key).keys.map { |option| [ "#{label.key}:#{option}", answers.probability(id, option) ] }
+        when :choice
+          LabelDefinition.sparse_choice(label.options(tenant_key).keys.to_h { |option| [ "#{label.key}:#{option}", answers.probability(id, option) ] }).to_a
         end
       end
     end

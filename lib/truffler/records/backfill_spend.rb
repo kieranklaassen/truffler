@@ -1,9 +1,9 @@
 module Truffler
   module Records
-    # The backfill spend ledger: one row per model and app-wide vocabulary
-    # version, so a spend cap holds across runs, reruns, and overlapping
-    # BackfillJob chains. Spend is reserved and settled in SQL, never read,
-    # added to, and written back.
+    # The backfill spend ledger: one row per model, tenant (nil for the
+    # app-wide ledger), and vocabulary version, so a spend cap holds across
+    # runs, reruns, and overlapping BackfillJob chains. Spend is reserved and
+    # settled in SQL, never read, added to, and written back.
     class BackfillSpend < ActiveRecord::Base
       self.table_name = "truffler_backfill_spends"
 
@@ -18,9 +18,33 @@ module Truffler
         false
       end
 
-      def self.ledger(model, version)
-        create_or_find_by!(record_type: model.polymorphic_name, vocabulary_version: version)
+      def self.for_ledger(model, tenant_key)
+        tenant_ledgers? ? for_model(model).where(tenant_key: tenant_key) : for_model(model)
       end
+
+      # Before `rails g truffler:upgrade` adds tenant_key, every tenant
+      # shares the app-wide row.
+      def self.ledger(model, version, tenant_key: nil)
+        attributes = { record_type: model.polymorphic_name, vocabulary_version: version }
+        attributes[:tenant_key] = tenant_key if tenant_ledgers?
+        create_or_find_by!(attributes)
+      end
+
+      def self.tenant_ledgers?
+        return true if column_names.include?("tenant_key")
+
+        warn_missing_tenant_key
+        false
+      end
+
+      def self.warn_missing_tenant_key
+        return if @missing_tenant_warned
+
+        @missing_tenant_warned = true
+        Truffler.config.logger.warn("[truffler] #{table_name}.tenant_key is missing, so backfill spend caps are app-wide. " \
+          "Run `bin/rails g truffler:upgrade && bin/rails db:migrate`.")
+      end
+      private_class_method :warn_missing_tenant_key
 
       def self.warn_missing
         return if @missing_warned

@@ -5,7 +5,12 @@ module Truffler
     # `similarity_sql` returns a scalar SQL expression over the model's table
     # that search can put in its SELECT or ORDER BY: stores that compute
     # similarity in the database (`inline_sql?`) scan every row exactly, and
-    # the rest fall back to a CASE over the top-K neighbors.
+    # the rest fall back to a CASE over the top-K neighbors. A store may also
+    # answer `neighbors_sql` with a `(record_id, similarity)` subquery, which
+    # search LEFT JOINs instead (see NeighborStore).
+    #
+    # `config.vector_store` is one of ADAPTERS or a store instance, such as
+    # `NeighborStore.new(k: 500)` or a subclass of this class.
     class VectorStore
       ADAPTERS = %i[auto ruby neighbor].freeze
       DEFAULT_K = 200
@@ -14,12 +19,13 @@ module Truffler
         embeddings = model.truffler_definition.embeddings
         return unless embeddings
         return ColumnStore.new(embeddings[:column]) if embeddings.key?(:column)
+        return config.vector_store if config.vector_store.respond_to?(:similarity_sql)
 
         case config.vector_store&.to_sym
         when :ruby then RubyStore.new
         when :neighbor then NeighborStore.new
         when :auto then NeighborStore.available?(model.connection) ? NeighborStore.new : RubyStore.new
-        else raise Error, "config.vector_store must be one of #{ADAPTERS.join(', ')}"
+        else raise Error, "config.vector_store must be one of #{ADAPTERS.join(', ')} or a store instance"
         end
       end
 
@@ -58,7 +64,7 @@ module Truffler
             fingerprint: fingerprint, embedding: Records::Embedding.encode(vector), dimensions: vector.size,
             created_at: now, updated_at: now },
           unique_by: %i[record_type record_id],
-          update_only: %i[tenant_key fingerprint embedding dimensions updated_at]
+          update_only: %i[tenant_key fingerprint embedding dimensions]
         )
       end
 

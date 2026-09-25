@@ -29,7 +29,7 @@ class ResumeJobTest < Truffler::TestCase
     assert_enqueued_jobs 1, only: Truffler::Jobs::LabelFlushJob
     perform_enqueued_jobs
     assert_equal "labeled", State.sole.status
-    assert_equal 6, Label.where(record_id: email.id).count
+    assert_equal 4, Label.where(record_id: email.id).count
   end
 
   test "reschedules a flush for pending live rows older than the threshold" do
@@ -69,7 +69,7 @@ class ResumeJobTest < Truffler::TestCase
 
     ResumeJob.perform_now
 
-    assert_enqueued_with(job: Truffler::Jobs::BackfillJob, args: [ "Email" ])
+    assert_enqueued_with(job: Truffler::Jobs::BackfillJob, args: [ "Email", { tenant_key: "1" } ])
     assert_no_enqueued_jobs only: Truffler::Jobs::LabelFlushJob
   end
 

@@ -18,6 +18,17 @@ module Truffler
         namespace = Module.new
         namespace.module_eval(context.render(File.read(TEMPLATE)), TEMPLATE)
         namespace.const_get(:CreateTrufflerTables).migrate(:up)
+        use_pgvector_column if Database.pgvector?
+      end
+
+      # The generator writes `t.vector` (from the neighbor gem) when the host
+      # passes dimensions. The suite mixes vector widths, so it swaps in an
+      # unconstrained pgvector column instead.
+      def self.use_pgvector_column
+        connection = ActiveRecord::Base.connection
+        connection.execute("ALTER TABLE truffler_embeddings ALTER COLUMN embedding TYPE vector USING NULL")
+        connection.schema_cache.clear!
+        Records::Embedding.reset_column_information
       end
 
       # Hides a gem table for the block, like a host that upgraded the gem

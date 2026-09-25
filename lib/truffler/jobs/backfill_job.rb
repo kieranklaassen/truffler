@@ -1,7 +1,9 @@
 module Truffler
   module Jobs
     # Backfills one model's stale, missing, failed, and demoted labels at
-    # backfill priority. Arguments are the record type, the id cursor, the
+    # backfill priority, over one tenant when given `tenant_key:` (the
+    # tenant's own spend ledger) or else the whole model's indexed records.
+    # Arguments are the record type, the tenant key, the id cursor, the
     # spend so far, the cap, the retry attempt, and the count of budget
     # denials in a row, never record text. A budget denial reschedules the job
     # from its cursor after the same backoff a waiting Labeling::Backfill uses
@@ -15,16 +17,23 @@ module Truffler
 
       queue_as { Truffler.config.queue_name }
 
-      def perform(record_type, cursor: nil, spent: 0.0, spend_cap: Truffler.config.backfill_spend_cap, max_pages: MAX_PAGES,
+      # The job's tenant keyword: the tenant for scoped models, none otherwise.
+      def self.tenant_argument(model, tenant_key)
+        model.truffler_definition.scoped? && !tenant_key.nil? ? { tenant_key: tenant_key.to_s } : {}
+      end
+
+      def perform(record_type, tenant_key: nil, cursor: nil, spent: 0.0, spend_cap: Truffler.config.backfill_spend_cap, max_pages: MAX_PAGES,
         attempt: 0, denials: 0)
         model = record_type.safe_constantize
         return unless model.respond_to?(:truffler_definition) && model.truffler_definition
 
-        result = Labeling::Backfill.new(model, cursor: cursor, spent: spent, spend_cap: spend_cap).run(max_pages: max_pages)
-        Instrumentation.instrument(:backfill, record_type: record_type, outcome: result.status,
+        result = Labeling::Backfill.new(model, tenant_key: tenant_key, cursor: cursor, spent: spent, spend_cap: spend_cap)
+          .run(max_pages: max_pages)
+        Instrumentation.instrument(:backfill, record_type: record_type, tenant_key: tenant_key, outcome: result.status,
           labeled_count: result.labeled, request_count: result.requests, cost: result.cost)
 
-        follow_up = { cursor: result.cursor, spent: spent + result.cost, spend_cap: spend_cap, max_pages: max_pages }
+        follow_up = { **self.class.tenant_argument(model, tenant_key), cursor: result.cursor, spent: spent + result.cost,
+          spend_cap: spend_cap, max_pages: max_pages }
         case result.status
         when :budget_denied then retry_after_denial(record_type, follow_up, result, denials)
         when :paused then self.class.perform_later(record_type, **follow_up)

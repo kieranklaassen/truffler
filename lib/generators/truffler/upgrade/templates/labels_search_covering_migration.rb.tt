@@ -1,0 +1,32 @@
+class CoverTrufflerLabelsForSearch < ActiveRecord::Migration<%= migration_version %>
+  disable_ddl_transaction!
+
+  COVERING = "index_truffler_labels_for_search_covering".freeze
+  COLUMNS = [ :record_type, :tenant_key, :label_key, :value ].freeze
+
+  def up
+    return unless postgres? && !covered?
+
+    add_index :truffler_labels, COLUMNS, include: [ :record_id ], name: COVERING, algorithm: :concurrently
+    remove_index :truffler_labels, name: "index_truffler_labels_for_search", algorithm: :concurrently, if_exists: true
+  end
+
+  def down
+    return unless postgres? && index_name_exists?(:truffler_labels, COVERING)
+
+    add_index :truffler_labels, COLUMNS, name: "index_truffler_labels_for_search", algorithm: :concurrently,
+      if_not_exists: true
+    remove_index :truffler_labels, name: COVERING, algorithm: :concurrently
+  end
+
+  private
+
+  def postgres?
+    connection.adapter_name.match?(/postg/i)
+  end
+
+  def covered?
+    index_name_exists?(:truffler_labels, COVERING) ||
+      select_value("SELECT indexdef FROM pg_indexes WHERE indexname = 'index_truffler_labels_for_search'").to_s.include?("INCLUDE")
+  end
+end

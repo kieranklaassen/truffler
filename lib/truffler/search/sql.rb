@@ -3,15 +3,24 @@ module Truffler
     # Builds the one keystroke query of KTD8, scored per KTD20:
     #
     #   w_label * SUM(weight * value) over the intent's nonzero label keys
-    #   + w_text * text similarity (inline SQL, or the store's top-K CASE)
+    #   + w_text * text similarity (a top-K join, inline SQL, or the store's top-K CASE)
     #   + w_keyword * keyword hit + w_exact * exact-source hit
     #   + SOFT_KEYWORD * w_keyword * soft keyword hit
     #
     # A weighted dot product, not cosine: cosine would divide out magnitude
     # and let a record high on unrelated labels outrank the one the query
     # asked for. Hard filters are EXISTS subqueries that run before scoring.
+    #
+    # At scale: when every record past the filters is a candidate (label-only
+    # and filtered searches), label scores come from one grouped aggregate
+    # LEFT JOINed on record_id instead of a subquery per row. A store with
+    # `neighbors_sql` (NeighborStore on Postgres) is LEFT JOINed the same
+    # way, so text similarity is read from the tenant's top-K. Relation
+    # sources run once, as `id = ANY(ARRAY(subquery))` on Postgres.
     class Sql
       LABELS = "truffler_labels".freeze
+      LABEL_SCORES = "truffler_label_scores".freeze
+      NEIGHBORS = "truffler_neighbors".freeze
       # Share of the keyword weight a soft keyword hit adds (see Encoding).
       SOFT_KEYWORD = 0.25
 
@@ -38,7 +47,8 @@ module Truffler
       # filter the filter decides membership and text matches only rank.
       def candidates(scope)
         base = base(scope)
-        return base if label_only? || encoding.filters.any?
+        base = base.joins(Arel.sql(neighbors_join_sql)) if neighbors_sql
+        return base if every_base_record?
 
         conditions = [ keyword_sql, exact_sql, (text_candidate_sql if text_score_sql) ].compact
         base.where(Arel.sql(conditions.any? ? conditions.map { |condition| "(#{condition})" }.join(" OR ") : "1 = 0"))
@@ -46,19 +56,21 @@ module Truffler
 
       def relation(scope, limit: nil)
         relation = candidates(scope)
+        relation = relation.joins(Arel.sql(label_scores_join_sql)) if grouped_label_scores?
         relation = relation.select(Arel.sql("#{table}.*")) if relation.select_values.empty?
         relation = relation.select(*score_columns.map { |name, sql| Arel.sql("(#{sql}) AS #{name}") })
         relation = relation.reorder(*ordering)
         limit ? relation.limit(limit) : relation
       end
 
+      # The label term: a per-candidate subquery when sources narrow the
+      # candidates, else the grouped join's score.
       def label_score_sql
-        intent = encoding.intent_vector
-        return if intent.empty?
+        return if encoding.intent_vector.empty?
+        return "COALESCE(#{connection.quote_table_name(LABEL_SCORES)}.score, 0.0)" if grouped_label_scores?
 
-        cases = intent.map { |key, weight| "WHEN #{quote(key)} THEN #{Float(weight)} * #{label_column('value')}" }.join(" ")
-        "COALESCE((SELECT SUM(CASE #{label_column('label_key')} #{cases} ELSE 0.0 END) FROM #{quoted_labels} " \
-          "WHERE #{label_scope_sql} AND #{label_column('label_key')} IN (#{intent.keys.map { |key| quote(key) }.join(', ')})), 0.0)"
+        "COALESCE((SELECT SUM(#{label_case_sql}) FROM #{quoted_labels} " \
+          "WHERE #{label_scope_sql} AND #{label_keys_sql}), 0.0)"
       end
 
       def sources
@@ -67,7 +79,7 @@ module Truffler
       end
 
       def keywords
-        encoding.keywords(query)
+        @keywords ||= encoding.keywords(query, keep: -> { Filler.label_words(definition, tenant_key) })
       end
 
       private
@@ -113,6 +125,46 @@ module Truffler
         arrived_at = model.arel_table[definition.arrived_at_column]
         scope = scope.where(arrived_at.gteq(range.from))
         range.to ? scope.where(arrived_at.lt(range.to)) : scope
+      end
+
+      def label_case_sql
+        cases = encoding.intent_vector.map { |key, weight| "WHEN #{quote(key)} THEN #{Float(weight)} * #{label_column('value')}" }
+        "CASE #{label_column('label_key')} #{cases.join(' ')} ELSE 0.0 END"
+      end
+
+      def label_keys_sql
+        "#{label_column('label_key')} IN (#{encoding.intent_vector.keys.map { |key| quote(key) }.join(', ')})"
+      end
+
+      # Every record past the tenant, time, and filters is a candidate.
+      def every_base_record?
+        label_only? || encoding.filters.any?
+      end
+
+      def grouped_label_scores?
+        encoding.intent_vector.any? && every_base_record?
+      end
+
+      # One aggregate over the tenant's rows for the intent's keys, which
+      # `index_truffler_labels_for_search` (with INCLUDE (record_id)) serves
+      # as an index-only scan.
+      def label_scores_join_sql
+        tenant = definition.scoped? ? " AND #{label_column('tenant_key')} = #{quote(tenant_key)}" : ""
+        scores = connection.quote_table_name(LABEL_SCORES)
+        "LEFT JOIN (SELECT #{label_column('record_id')} AS record_id, SUM(#{label_case_sql}) AS score FROM #{quoted_labels} " \
+          "WHERE #{label_column('record_type')} = #{quote(model.polymorphic_name)}#{tenant} AND #{label_keys_sql} " \
+          "GROUP BY #{label_column('record_id')}) #{scores} ON #{scores}.record_id = #{primary_key}"
+      end
+
+      def neighbors_sql
+        return @neighbors_sql if defined?(@neighbors_sql)
+
+        @neighbors_sql = (store.neighbors_sql(model, tenant_key: tenant_key, vector: vector) if vector && store.respond_to?(:neighbors_sql))
+      end
+
+      def neighbors_join_sql
+        neighbors = connection.quote_table_name(NEIGHBORS)
+        "LEFT JOIN (#{neighbors_sql}) #{neighbors} ON #{neighbors}.record_id = #{primary_key}"
       end
 
       def label_filter_sql(key, threshold)
@@ -171,7 +223,10 @@ module Truffler
       def text_score_sql
         return @text_score_sql if defined?(@text_score_sql)
 
-        @text_score_sql = (store.similarity_sql(model, tenant_key: tenant_key, vector: vector).to_s if vector && store)
+        @text_score_sql =
+          if neighbors_sql then "COALESCE(#{connection.quote_table_name(NEIGHBORS)}.similarity, 0.0)"
+          elsif vector && store then store.similarity_sql(model, tenant_key: tenant_key, vector: vector).to_s
+          end
       end
 
       def text_candidate_sql
@@ -186,9 +241,14 @@ module Truffler
         definition.scoped? ? model.where(definition.tenant_column => tenant_key) : model.all
       end
 
+      # An id list is the fast path. A relation runs once as an array on
+      # Postgres, where `IN (subquery)` becomes a hashed filter over every
+      # tenant row.
       def membership_sql(result)
         case result
-        when ActiveRecord::Relation then "#{primary_key} IN (#{result.reselect(result.klass.arel_table[result.klass.primary_key]).to_sql})"
+        when ActiveRecord::Relation
+          subquery = result.reselect(result.klass.arel_table[result.klass.primary_key]).to_sql
+          connection.adapter_name.match?(/postg/i) ? "#{primary_key} = ANY(ARRAY(#{subquery}))" : "#{primary_key} IN (#{subquery})"
         when nil then nil
         else
           ids = Array(result)

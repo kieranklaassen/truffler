@@ -9,7 +9,9 @@ end
 class NeighborStoreTest < Truffler::TestCase
   Neighbor = Truffler::Embeddings::NeighborStore
 
-  def self.load_sqlite_vec
+  def self.load_vector_extension
+    return (Truffler::Test::Database.pgvector? ? nil : "pgvector is not installed on this Postgres server") if Truffler::Test::Database.postgres?
+
     path = ENV["TRUFFLER_SQLITE_VEC_PATH"].presence || (SqliteVec.loadable_path if defined?(SqliteVec))
     return "sqlite-vec not available (add the sqlite-vec gem or set TRUFFLER_SQLITE_VEC_PATH)" unless path
 
@@ -22,9 +24,9 @@ class NeighborStoreTest < Truffler::TestCase
     "sqlite-vec failed to load (#{error.class})"
   end
 
-  SKIP_REASON = load_sqlite_vec
+  SKIP_REASON = load_vector_extension
 
-  def require_sqlite_vec
+  def require_vector_extension
     skip SKIP_REASON if SKIP_REASON
   end
 
@@ -52,15 +54,15 @@ class NeighborStoreTest < Truffler::TestCase
     assert_match(/sqlite-vec/, error.message)
   end
 
-  test "auto picks the neighbor store when sqlite-vec loads" do
-    require_sqlite_vec
+  test "auto picks the neighbor store when pgvector or sqlite-vec is available" do
+    require_vector_extension
 
     assert Neighbor.available?(ActiveRecord::Base.connection)
     assert_instance_of Neighbor, Truffler::Embeddings::VectorStore.for(EmbeddedNote)
   end
 
   test "nearest orders by cosine within the tenant, matching the ruby store" do
-    require_sqlite_vec
+    require_vector_extension
     close = note_with_vector([ 1.0, 0.1, 0.0 ])
     far = note_with_vector([ 0.0, 0.0, 1.0 ])
     middle = note_with_vector([ 0.7, 0.7, 0.0 ])
@@ -74,7 +76,7 @@ class NeighborStoreTest < Truffler::TestCase
   end
 
   test "similarity_sql scores every row inline in the caller's query" do
-    require_sqlite_vec
+    require_vector_extension
     close = note_with_vector([ 1.0, 0.1, 0.0 ])
     far = note_with_vector([ 0.0, 1.0, 0.0 ])
     bare = EmbeddedNote.create!(account_id: 1, title: "No vector yet")
@@ -92,7 +94,7 @@ class NeighborStoreTest < Truffler::TestCase
   end
 
   test "similarity_sql never reads another tenant's vector for the same record id" do
-    require_sqlite_vec
+    require_vector_extension
     note = note_with_vector([ 1.0, 0.0 ])
     Truffler::Records::Embedding.where(record_id: note.id).update_all(tenant_key: "2")
 
