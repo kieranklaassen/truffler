@@ -51,51 +51,55 @@ module Truffler
       end
 
       def request(model, query, tenant_key:, user_key: nil)
-        present = present_options(model, tenant_key, user_key)
-        labels = labels(model, tenant_key, user_key, present)
-        questions = Questions.new
-        labels.each_value do |label|
-          questions.choice(:"intent__#{label.question_key}", instructions: intent_instructions(label), criteria: INTENTS)
-        end
-        labels.each_value do |label|
-          next unless label.type == :choice
+        Current.scope do
+          present = present_options(model, tenant_key, user_key)
+          labels = labels(model, tenant_key, user_key, present)
+          questions = Questions.new
+          labels.each_value do |label|
+            questions.choice(:"intent__#{label.question_key}", instructions: intent_instructions(label), criteria: INTENTS)
+          end
+          labels.each_value do |label|
+            next unless label.type == :choice
 
-          options = PresentOptions.options(label, tenant_key, present).merge(NO_OPTION => "The query names none of these")
-          questions.choice(:"option__#{label.question_key}", instructions: %(Which "#{label.key}" option does the search query ask about?),
-            criteria: options)
-        end
+            options = PresentOptions.options(label, tenant_key, present).merge(NO_OPTION => "The query names none of these")
+            questions.choice(:"option__#{label.question_key}", instructions: %(Which "#{label.key}" option does the search query ask about?),
+              criteria: options)
+          end
 
-        words = query.tokens.each_with_index.reject do |token, position|
-          query.exact_tokens.include?(token) || query.time_position?(position)
-        end
-        asked = words.first(MAX_TOKEN_QUESTIONS)
-        token_ids = asked.to_h do |_token, position|
-          id = :"token__#{position}"
-          questions.choice(id, instructions: %(In the search query, what is the word tokens[#{position}]? The labels it may name, ) +
-            %(with their options, are in `labels`.), criteria: TOKEN_ROLES)
-          [ position, id.to_s ]
-        end
+          words = query.tokens.each_with_index.reject do |token, position|
+            query.exact_tokens.include?(token) || query.time_position?(position)
+          end
+          asked = words.first(MAX_TOKEN_QUESTIONS)
+          token_ids = asked.to_h do |_token, position|
+            id = :"token__#{position}"
+            questions.choice(id, instructions: %(In the search query, what is the word tokens[#{position}]? The labels it may name, ) +
+              %(with their options, are in `labels`.), criteria: TOKEN_ROLES)
+            [ position, id.to_s ]
+          end
 
-        state = { "query" => query.normalized, "tokens" => query.tokens, "labels" => vocabulary_state(labels, tenant_key, present) }
-        Request.new(state: state, questions: questions.to_h, token_ids: token_ids, exact_tokens: query.exact_tokens,
-          unasked_tokens: words.drop(MAX_TOKEN_QUESTIONS).map(&:first))
+          state = { "query" => query.normalized, "tokens" => query.tokens, "labels" => vocabulary_state(labels, tenant_key, present) }
+          Request.new(state: state, questions: questions.to_h, token_ids: token_ids, exact_tokens: query.exact_tokens,
+            unasked_tokens: words.drop(MAX_TOKEN_QUESTIONS).map(&:first))
+        end
       end
 
       # Encodes the query pending under `cache_key`. Returns the encoding, or
       # nil when the payload expired, the vocabulary moved on, or the encode
       # budget was denied (a silent skip). Always releases the in-flight marker.
       def encode(cache_key)
-        pending = cache.read_payload(cache_key)
-        return unless pending
+        Current.scope do
+          pending = cache.read_payload(cache_key)
+          return unless pending
 
-        model, query, tenant_key, user_key = pending.values_at(:model, :query, :tenant_key, :user_key)
-        return unless cache.key(model, query, tenant_key: tenant_key, user_key: user_key) == cache_key
+          model, query, tenant_key, user_key = pending.values_at(:model, :query, :tenant_key, :user_key)
+          return unless cache.key(model, query, tenant_key: tenant_key, user_key: user_key) == cache_key
 
-        encoding = cache.encoded?(cache_key) ? cache.read_encoding(cache_key, query) : encode_labels(model, query, tenant_key, user_key)
-        embed_query(model, query, tenant_key)
-        encoding
-      ensure
-        cache.release(cache_key)
+          encoding = cache.encoded?(cache_key) ? cache.read_encoding(cache_key, query) : encode_labels(model, query, tenant_key, user_key)
+          embed_query(model, query, tenant_key)
+          encoding
+        ensure
+          cache.release(cache_key)
+        end
       end
 
       # Polls the cache until the encoding lands or the deadline (seconds

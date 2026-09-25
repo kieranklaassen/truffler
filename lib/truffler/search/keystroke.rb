@@ -36,32 +36,36 @@ module Truffler
       end
 
       def call
-        started = Instrumentation.monotonic_ms
-        watermark = Time.current
-        explicit_action = surface_action
-        cached = read_encoding
-        status = encoding_status(cached)
-        encoding = visible_lenses_only(with_time(cached)&.without(suppressed, keep_words: label_words), record_usage: true)
-        sql = sql(encoding)
-        records = sql.relation(scope, limit: limit).to_a
-        relaxed = relax(encoding, records)
-        records, encoding, sql = relaxed.records, relaxed.encoding, sql(relaxed.encoding) if relaxed
-        relaxed_labels = relaxed&.relaxed_labels.to_a
-        result = Result.new(records: records, query: query, encoding: encoding, encoding_status: status, watermark: watermark,
-          explicit_action: explicit_action, sources: sql.sources, invite_row: invite_row(records, cached, status),
-          local_weak: local_weak?(records, cached), weights: @weights, relaxed_labels: relaxed_labels,
-          recount: ->(since) { count(since: since, relaxed: relaxed_labels) })
-        instrument(result, started)
-        result
+        Current.scope do
+          started = Instrumentation.monotonic_ms
+          watermark = Time.current
+          explicit_action = surface_action
+          cached = read_encoding
+          status = encoding_status(cached)
+          encoding = visible_lenses_only(with_time(cached)&.without(suppressed, keep_words: label_words), record_usage: true)
+          sql = sql(encoding)
+          records = sql.relation(scope, limit: limit).to_a
+          relaxed = relax(encoding, records)
+          records, encoding, sql = relaxed.records, relaxed.encoding, sql(relaxed.encoding) if relaxed
+          relaxed_labels = relaxed&.relaxed_labels.to_a
+          result = Result.new(records: records, query: query, encoding: encoding, encoding_status: status, watermark: watermark,
+            explicit_action: explicit_action, sources: sql.sources, invite_row: invite_row(records, cached, status),
+            local_weak: local_weak?(records, cached), weights: @weights, relaxed_labels: relaxed_labels,
+            recount: ->(since) { count(since: since, relaxed: relaxed_labels) })
+          instrument(result, started)
+          result
+        end
       end
 
       # How many records the same search would return that arrived after
       # `since` (R25), with the filters `relaxed` demoted as the search did.
       # Reads the cache only and never prefetches.
       def count(since:, relaxed: [])
-        encoding = visible_lenses_only(with_time(read_encoding)&.without(suppressed, keep_words: label_words))
-        sql(relaxed.any? ? encoding&.relax(relaxed) : encoding).candidates(scope)
-          .where(model.arel_table[@definition.arrived_at_column].gt(since)).count
+        Current.scope do
+          encoding = visible_lenses_only(with_time(read_encoding)&.without(suppressed, keep_words: label_words))
+          sql(relaxed.any? ? encoding&.relax(relaxed) : encoding).candidates(scope)
+            .where(model.arel_table[@definition.arrived_at_column].gt(since)).count
+        end
       end
 
       private

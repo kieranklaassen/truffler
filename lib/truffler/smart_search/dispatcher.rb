@@ -21,24 +21,26 @@ module Truffler
       end
 
       def call(run)
-        return unless run.status == :pending && run.model.try(:truffler_definition)
+        Current.scope do
+          return unless run.status == :pending && run.model.try(:truffler_definition)
 
-        start_provider(run)
-        decision = @budget.admit(priority: :rerank, user_key: run.user_key)
-        if decision.denied?
-          run.pause!(decision.reason)
-          return
+          start_provider(run)
+          decision = @budget.admit(priority: :rerank, user_key: run.user_key)
+          if decision.denied?
+            run.pause!(decision.reason)
+            return
+          end
+
+          encoding = await_encoding(run)
+          candidate_ids, encoding, relaxed = filter(run, encoding)
+          return if run.cancelled?
+
+          run.plan!(candidate_ids: candidate_ids, chunk_size: @config.rerank_chunk_size, filters: encoding&.filters&.keys.to_a,
+            relaxed_labels: relaxed)
+          run.chunk_count.times { |index| @enqueue.call(run, index) }
+          run.ping(SMART) if candidate_ids.empty?
+          candidate_ids
         end
-
-        encoding = await_encoding(run)
-        candidate_ids, encoding, relaxed = filter(run, encoding)
-        return if run.cancelled?
-
-        run.plan!(candidate_ids: candidate_ids, chunk_size: @config.rerank_chunk_size, filters: encoding&.filters&.keys.to_a,
-          relaxed_labels: relaxed)
-        run.chunk_count.times { |index| @enqueue.call(run, index) }
-        run.ping(SMART) if candidate_ids.empty?
-        candidate_ids
       end
 
       private

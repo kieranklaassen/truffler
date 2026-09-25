@@ -20,46 +20,48 @@ module Truffler
       end
 
       def label(states, priority:)
-        return Result.new(labeled: 0, requests: 0, cost: 0.0, demoted: false) if states.empty?
+        Current.scope do
+          return Result.new(labeled: 0, requests: 0, cost: 0.0, demoted: false) if states.empty?
 
-        tenant_key = tenant_key_of(states)
-        records = load_records(states, tenant_key)
-        vocabulary = definition.vocabulary
-        @labels = vocabulary.labels_for(tenant_key: tenant_key, all_users: true)
-        fingerprints = vocabulary.fingerprints(tenant_key: tenant_key, all_users: true)
-        version = vocabulary.version(tenant_key: tenant_key, all_users: true)
-        states_by_id = states.index_by { |state| state.record_id.to_s }
+          tenant_key = tenant_key_of(states)
+          records = load_records(states, tenant_key)
+          vocabulary = definition.vocabulary
+          @labels = vocabulary.labels_for(tenant_key: tenant_key, all_users: true)
+          fingerprints = vocabulary.fingerprints(tenant_key: tenant_key, all_users: true)
+          version = vocabulary.version(tenant_key: tenant_key, all_users: true)
+          states_by_id = states.index_by { |state| state.record_id.to_s }
 
-        stored = stored_fingerprints(records)
-        askable = askable_labels
-        stale = records.map { |record| [ record, stale_keys(stored[record.id.to_s].to_h, fingerprints, tenant_key, askable) ] }
-        supplied = askable.select(&:supplied?).map(&:key)
-        supplier = Supplied.new(model)
-        written = supplier.write(stale.map { |record, keys| [ record, keys & supplied ] }, tenant_key: tenant_key)
-        current, pending = stale.map { |record, keys| [ record, keys - supplied ] }.partition { |_, keys| keys.empty? }
-        settled = current.reject { |record, _| supplier.failed_ids.include?(record.id) }
-        Records::RecordState.mark_labeled(settled.map { |record, _| states_by_id[record.id.to_s].id }, version: version)
-        Embeddings::LabelVector.new(model).write(current.map { |record, _| record.id } - written, tenant_key: tenant_key)
+          stored = stored_fingerprints(records)
+          askable = askable_labels
+          stale = records.map { |record| [ record, stale_keys(stored[record.id.to_s].to_h, fingerprints, tenant_key, askable) ] }
+          supplied = askable.select(&:supplied?).map(&:key)
+          supplier = Supplied.new(model)
+          written = supplier.write(stale.map { |record, keys| [ record, keys & supplied ] }, tenant_key: tenant_key)
+          current, pending = stale.map { |record, keys| [ record, keys - supplied ] }.partition { |_, keys| keys.empty? }
+          settled = current.reject { |record, _| supplier.failed_ids.include?(record.id) }
+          Records::RecordState.mark_labeled(settled.map { |record, _| states_by_id[record.id.to_s].id }, version: version)
+          Embeddings::LabelVector.new(model).write(current.map { |record, _| record.id } - written, tenant_key: tenant_key)
 
-        requests = RequestBuilder.new(definition, tenant_key: tenant_key, labels: @labels).build(pending)
-        cost = 0.0
-        requests.each_with_index do |request, index|
-          decision = budget.acquire(priority: priority, tenant_key: (tenant_key if index.zero?),
-            records: index.zero? ? pending.size : 1)
-          if decision.demoted?
-            retry_failed_supplied(supplier.failed_ids, states_by_id)
-            return Result.new(labeled: current.size, requests: index, cost: cost, demoted: true)
+          requests = RequestBuilder.new(definition, tenant_key: tenant_key, labels: @labels).build(pending)
+          cost = 0.0
+          requests.each_with_index do |request, index|
+            decision = budget.acquire(priority: priority, tenant_key: (tenant_key if index.zero?),
+              records: index.zero? ? pending.size : 1)
+            if decision.demoted?
+              retry_failed_supplied(supplier.failed_ids, states_by_id)
+              return Result.new(labeled: current.size, requests: index, cost: cost, demoted: true)
+            end
+            raise BudgetExhausted.new("no Jev budget for #{priority} labeling", retry_after: decision.retry_after) if decision.denied?
+
+            answers = client.ask(state: request.state, questions: request.questions, priority: decision.priority)
+            cost += answers.usage&.cost.to_f
+            charge_lenses(request, answers.usage&.cost.to_f)
+            store(request, answers, fingerprints, tenant_key, version, states_by_id)
           end
-          raise BudgetExhausted.new("no Jev budget for #{priority} labeling", retry_after: decision.retry_after) if decision.denied?
 
-          answers = client.ask(state: request.state, questions: request.questions, priority: decision.priority)
-          cost += answers.usage&.cost.to_f
-          charge_lenses(request, answers.usage&.cost.to_f)
-          store(request, answers, fingerprints, tenant_key, version, states_by_id)
+          retry_failed_supplied(supplier.failed_ids, states_by_id)
+          Result.new(labeled: records.size, requests: requests.size, cost: cost, demoted: false)
         end
-
-        retry_failed_supplied(supplier.failed_ids, states_by_id)
-        Result.new(labeled: records.size, requests: requests.size, cost: cost, demoted: false)
       end
 
       private

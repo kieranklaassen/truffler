@@ -24,12 +24,14 @@ module Truffler
       # Scores chunk `index` of the run and appends it to the buckets.
       # Returns :done, :cancelled, :paused, :failed, or :skipped.
       def call(run, index)
-        return :skipped unless run.active? && run.chunk_ids(index) && !run.chunk_resolved?(index)
+        Current.scope do
+          return :skipped unless run.active? && run.chunk_ids(index) && !run.chunk_resolved?(index)
 
-        started = Instrumentation.monotonic_ms
-        outcome = rerank(run, index)
-        instrument(run, index, outcome, started)
-        outcome
+          started = Instrumentation.monotonic_ms
+          outcome = rerank(run, index)
+          instrument(run, index, outcome, started)
+          outcome
+        end
       end
 
       def request(run, records)
