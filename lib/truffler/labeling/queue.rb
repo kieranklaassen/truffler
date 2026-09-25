@@ -1,9 +1,11 @@
 module Truffler
   module Labeling
     # State transitions on truffler_record_states for one model, plus the
-    # deduplicated scheduling of LabelFlushJob per tenant. Jobs carry only the
-    # record type and tenant key.
+    # deduplicated scheduling of LabelFlushJob per tenant and of BackfillJob
+    # for demoted rows. Jobs carry only the record type and tenant key.
     class Queue
+      BACKFILL_WAIT = 1.minute
+
       attr_reader :model, :config
 
       def initialize(model, config: Truffler.config)
@@ -36,6 +38,15 @@ module Truffler
         job = Jobs::LabelFlushJob
         job = job.set(wait: window) if window.positive?
         job.perform_later(record_type, tenant_key)
+      end
+
+      # Starts a backfill shortly after live rows are demoted over the tenant
+      # cap. One per model per marker lifetime; ResumeJob still catches rows a
+      # dropped job leaves behind.
+      def schedule_backfill
+        return unless config.cache_store.write(backfill_marker, true, unless_exist: true, expires_in: BACKFILL_WAIT + 300)
+
+        Jobs::BackfillJob.set(wait: BACKFILL_WAIT).perform_later(record_type)
       end
 
       def clear_marker(tenant_key)
@@ -104,6 +115,10 @@ module Truffler
 
       def marker(tenant_key)
         "truffler/flush/#{record_type}/#{tenant_key}"
+      end
+
+      def backfill_marker
+        "truffler/backfill/#{record_type}"
       end
     end
   end

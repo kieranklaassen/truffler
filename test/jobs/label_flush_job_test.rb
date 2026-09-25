@@ -87,6 +87,27 @@ class LabelFlushJobTest < Truffler::TestCase
     assert_equal [ [ "pending", "backfill" ] ] * 3, State.pluck(:status, :priority)
   end
 
+  test "demoting over-cap rows schedules one delayed backfill" do
+    Truffler.config.tenant_live_cap = 2
+    3.times { create_email }
+    3.times { create_email(account_id: 2) }
+    clear_enqueued_jobs
+
+    freeze_time do
+      Truffler::Jobs::LabelFlushJob.perform_now("Email", "1")
+      Truffler::Jobs::LabelFlushJob.perform_now("Email", "2")
+
+      backfill = enqueued_jobs.select { |job| job[:job] == Truffler::Jobs::BackfillJob }
+      assert_equal 1, backfill.size, "the marker deduplicates the backfill"
+      assert_equal [ "Email" ], backfill.sole[:args]
+      assert_in_delta 1.minute.from_now.to_f, backfill.sole[:at], 1
+    end
+
+    clear_enqueued_jobs
+    perform_enqueued_jobs { Truffler::Jobs::BackfillJob.perform_now("Email") }
+    assert_equal [ "labeled" ] * 6, State.pluck(:status)
+  end
+
   test "a job for a model that is no longer declared does nothing" do
     assert_nothing_raised { Truffler::Jobs::LabelFlushJob.perform_now("Email", "missing-tenant") }
     assert_empty @fake.calls
