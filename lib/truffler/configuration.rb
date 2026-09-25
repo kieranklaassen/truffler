@@ -12,6 +12,7 @@ module Truffler
     attr_accessor :miss_retention, :miss_min_distinct_users
     attr_writer :secret_key_base
     attr_accessor :vector_store, :embedding_cost_per_million_tokens
+    attr_reader :lenses
 
     def initialize(env: ENV)
       @model = "jev-latest"
@@ -35,6 +36,7 @@ module Truffler
       @resume_pending_after = 5.minutes
       @vector_store = :auto
       @embedding_cost_per_million_tokens = 0.02
+      @lenses = Lenses::Settings.new
     end
 
     def client
