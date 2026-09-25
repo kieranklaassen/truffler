@@ -10,11 +10,12 @@ module Truffler
       SCORE_COLUMNS = { label: "truffler_label_score", text: "truffler_text_score", keyword: "truffler_keyword_score",
         exact: "truffler_exact_score" }.freeze
 
-      attr_reader :records, :query, :encoding, :encoding_status, :watermark, :explicit_action, :sources, :invite_row
+      attr_reader :records, :query, :encoding, :encoding_status, :watermark, :explicit_action, :sources, :invite_row, :relaxed_labels
 
       def initialize(records:, query:, encoding:, encoding_status:, watermark:, explicit_action:, sources:, invite_row:, weights:, recount:,
-        local_weak: nil)
+        local_weak: nil, relaxed_labels: [])
         @local_weak = local_weak
+        @relaxed_labels = relaxed_labels
         @records = records
         @query = query
         @encoding = encoding
@@ -39,12 +40,17 @@ module Truffler
         @local_weak.nil? ? invite_row.present? : @local_weak
       end
 
-      # Applied filters, then boosts, then the time range, as `{key:, label:, kind:, name:}`.
+      # Applied filters, then relaxed filters, then boosts, then the time range,
+      # as `{key:, label:, kind:, name:}`. A filter relaxed because it left
+      # nothing to show (`relaxed_labels`) keeps its filter chip with
+      # `relaxed: true`, so the host can say "No email sources; showing
+      # keyword matches".
       def chips
         return [] unless encoding
 
-        filters = encoding.filters.keys.map { |key| chip(key, :filter) }
-        chips = filters + (encoding.boosts.keys - encoding.filters.keys).map { |key| chip(key, :boost) }
+        filters = encoding.filters.keys.map { |key| chip(key, :filter) } +
+          relaxed_labels.map { |key| chip(key, :filter).merge(relaxed: true) }
+        chips = filters + (encoding.boosts.keys - encoding.filters.keys - relaxed_labels).map { |key| chip(key, :boost) }
         time = encoding.time
         time ? chips + [ { key: TimeRange.key, label: TimeRange.key, kind: :time, name: time.name } ] : chips
       end

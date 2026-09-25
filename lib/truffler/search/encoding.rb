@@ -65,15 +65,30 @@ module Truffler
         keep = ->(key, _) { !suppressed.include?(key) && !suppressed.include?(self.class.split_key(key).first) }
         kept = { filters: filters.select(&keep), boosts: boosts.select(&keep), intent_vector: intent_vector.select(&keep) }
         applied = kept.values.flat_map(&:keys).to_set
-        freed = label_term_sources.select { |_, keys| keys.any? && keys.none? { |key| applied.include?(key) } }.keys
+        freed = freed_words(applied)
         kept_time = (time unless suppressed.include?(TimeRange.key))
         keywords = keyword_tokens && (keyword_tokens + freed).uniq
         if keywords && applied.empty? && kept_time.nil?
           keywords = Filler.keywords(keywords + filler_tokens, anchored: false, keep: keep_words.respond_to?(:call) ? keep_words.call : keep_words)
         end
-        with(**kept, time: kept_time, label_term_tokens: label_term_tokens - freed,
-          label_term_sources: label_term_sources.except(*freed), soft_keyword_tokens: soft_keyword_tokens - freed,
-          keyword_tokens: keywords)
+        with(**kept, time: kept_time, **free(freed, keywords))
+      end
+
+      # The encoding with the filters `keys` demoted to soft boosts (zero-result
+      # relaxation, see Relaxation): they stay in the intent vector, at their
+      # intent weight or DEFAULT_BOOST when filtering gave them none, so records
+      # that match still rank first, but nothing requires them. A label term
+      # whose every applied source was relaxed becomes a keyword again, as in
+      # `without`.
+      def relax(keys)
+        relaxed = filters.slice(*Array(keys).map(&:to_s))
+        return self if relaxed.empty?
+
+        soft = relaxed.to_h { |key, _| [ key, intent_vector[key] || boosts[key] || QueryEncoding::DEFAULT_BOOST ] }
+        kept_filters = filters.except(*relaxed.keys)
+        freed = freed_words((kept_filters.keys + boosts.keys + intent_vector.keys).to_set - relaxed.keys)
+        with(filters: kept_filters, boosts: boosts.merge(soft), intent_vector: intent_vector.merge(soft),
+          **free(freed, keyword_tokens && (keyword_tokens + freed).uniq))
       end
 
       # Splits a storage key into its label key and choice option. Lens keys
@@ -112,6 +127,16 @@ module Truffler
       end
 
       private
+
+      # Label terms none of whose source keys is still applied.
+      def freed_words(applied)
+        label_term_sources.select { |_, keys| keys.any? && keys.none? { |key| applied.include?(key) } }.keys
+      end
+
+      def free(freed, keywords)
+        { label_term_tokens: label_term_tokens - freed, label_term_sources: label_term_sources.except(*freed),
+          soft_keyword_tokens: soft_keyword_tokens - freed, keyword_tokens: keywords }
+      end
 
       def weights(hash)
         hash.to_h.to_h { |key, weight| [ key.to_s, Float(weight) ] }

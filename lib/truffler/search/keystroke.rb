@@ -44,17 +44,23 @@ module Truffler
         encoding = visible_lenses_only(with_time(cached)&.without(suppressed, keep_words: label_words), record_usage: true)
         sql = sql(encoding)
         records = sql.relation(scope, limit: limit).to_a
+        relaxed = relax(encoding, records)
+        records, encoding, sql = relaxed.records, relaxed.encoding, sql(relaxed.encoding) if relaxed
+        relaxed_labels = relaxed&.relaxed_labels.to_a
         result = Result.new(records: records, query: query, encoding: encoding, encoding_status: status, watermark: watermark,
           explicit_action: explicit_action, sources: sql.sources, invite_row: invite_row(records, cached, status),
-          local_weak: local_weak?(records, cached), weights: @weights, recount: ->(since) { count(since: since) })
+          local_weak: local_weak?(records, cached), weights: @weights, relaxed_labels: relaxed_labels,
+          recount: ->(since) { count(since: since, relaxed: relaxed_labels) })
         instrument(result, started)
         result
       end
 
       # How many records the same search would return that arrived after
-      # `since` (R25). Reads the cache only and never prefetches.
-      def count(since:)
-        sql(visible_lenses_only(with_time(read_encoding)&.without(suppressed, keep_words: label_words))).candidates(scope)
+      # `since` (R25), with the filters `relaxed` demoted as the search did.
+      # Reads the cache only and never prefetches.
+      def count(since:, relaxed: [])
+        encoding = visible_lenses_only(with_time(read_encoding)&.without(suppressed, keep_words: label_words))
+        sql(relaxed.any? ? encoding&.relax(relaxed) : encoding).candidates(scope)
           .where(model.arel_table[@definition.arrived_at_column].gt(since)).count
       end
 
@@ -138,6 +144,13 @@ module Truffler
         Sql.new(model, tenant_key: tenant_key, query: query, encoding: encoding, vector: read_vector, weights: @weights)
       end
 
+      # Only an empty result under filters pays for relaxation.
+      def relax(encoding, records)
+        return unless records.empty? && encoding&.filters&.any?
+
+        Relaxation.new(model, encoding, sql: method(:sql)).call(scope, limit: limit)
+      end
+
       # R21: the Smart search row. A query whose encoding is not cached yet
       # invites the action even when a blind index or keyword matched,
       # because a first-time intent query resolves on the action (AE10): on a
@@ -163,7 +176,7 @@ module Truffler
 
       def instrument(result, started)
         payload = { record_type: model.polymorphic_name, tenant_key: tenant_key, surface: surface, outcome: result.encoding_status,
-          result_count: result.records.size, filter_count: result.encoding&.filters&.size.to_i,
+          result_count: result.records.size, filter_count: result.encoding&.filters&.size.to_i, relaxed_count: result.relaxed_labels.size,
           boost_count: result.encoding&.intent_vector&.size.to_i, sources: result.sources.map(&:to_s),
           reason: result.invite_row&.dig(:reason), latency_ms: Instrumentation.elapsed_ms(started) }
         payload[:query_digest] = Misses.digest(:query, query.normalized) if Misses.encrypted_model?(model)
