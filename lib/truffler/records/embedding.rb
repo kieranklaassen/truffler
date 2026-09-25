@@ -17,7 +17,7 @@ module Truffler
         case value
         when nil then nil
         when Array then value.map(&:to_f)
-        else value.encoding == Encoding::BINARY ? value.unpack("e*") : JSON.parse(value).map(&:to_f)
+        else value.encoding == ::Encoding::BINARY ? value.unpack("e*") : JSON.parse(value).map(&:to_f)
         end
       end
 

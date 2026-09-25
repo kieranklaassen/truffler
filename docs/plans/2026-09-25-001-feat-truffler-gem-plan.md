@@ -312,7 +312,7 @@ These are defaults chosen in pipeline mode. Each one is a tunable default or a r
 - KTD19. **CI runs on GitHub Actions.** One workflow runs `rubocop` (`rubocop-rails-omakase`, matching Kieran's apps), then the tests and a benchmark replay smoke run, on Ruby 3.2, 3.3, and 3.4 against the latest Rails 8.x gems. sqlite-vec neighbor tests run only when the extension loads.
 - KTD20. **Hybrid scoring in one query: label vectors plus text similarity.** Each record's labels form an embedding with named dimensions, the QA-Emb pattern (arXiv 2405.16714).
   - **Stored vector:** after labeling, the gem writes a `label_vector` (floats in the vocabulary version's sorted label-key order, choice options expanded) to `truffler_embeddings`, beside the optional text vector.
-  - **Query vector:** query encoding (KTD9) yields a sparse intent vector. Each label's weight is its declared weight times Jev's decision: filter or boost gives the weight, ignore gives 0.
+  - **Query vector:** query encoding (KTD9) yields a sparse intent vector. Each label's weight is its declared weight times Jev's decision: boost gives the weight; filter narrows the set and adds no weight unless the declaration sets `filter_weight` (default 0), so a filtered set keeps its declared order (AE1); ignore gives 0.
   - **Score:** `w_label × Σ q_k·v_k + w_text × text_similarity + source-hit terms`, where the blend weights come from the declaration and are tuned by the benchmark (R36).
   - **Dot product, not cosine,** because cosine divides out magnitude and lets records high on unrelated labels outrank the one label the query asked for.
   - **Hard filters** (must-have labels) stay `EXISTS` subqueries and run before scoring.
@@ -791,7 +791,7 @@ The gem ships no React components. Each host-rendered requirement maps to a gem-
 - **Goal:** Jev turns queries into label filters, boosts, and keyword splits. The answers are cached per R15, and they apply only on later keystrokes or the explicit action.
 - **Requirements:** R13, R14, R15, R18, R20 (chip source), F2, AE1, AE6, AE10. Implements KTD9 and KTD10.
 - **Dependencies:** U2, U4, U8.
-- **Files:** `lib/truffler/encoding/encoder.rb`, `lib/truffler/encoding/cache.rb`, `lib/truffler/jobs/encode_query_job.rb`, `test/encoding/encoder_test.rb`, `test/encoding/cache_test.rb`, `test/jobs/encode_query_job_test.rb`.
+- **Files:** `lib/truffler/query_encoding/encoder.rb`, `lib/truffler/query_encoding/cache.rb`, `lib/truffler/jobs/encode_query_job.rb`, `test/query_encoding/encoder_test.rb`, `test/query_encoding/cache_test.rb`, `test/jobs/encode_query_job_test.rb`.
 - **Approach:**
   1. `Cache` keys are `truffler/enc/<sha256(normalized query + vocabulary version [+ tenant_key when per_tenant_vocabulary?])>`, and query vectors use `…/vec/…`. Values hold decisions and vectors, never query text.
   2. The prefetch writes an in-flight marker with `unless_exist`. It stores the query payload in the cache, encrypted for encrypted models, and enqueues `EncodeQueryJob(cache_key)`.
