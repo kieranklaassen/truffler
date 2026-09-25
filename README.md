@@ -322,7 +322,7 @@ Set these in `Truffler.configure do |config| ... end`.
 | `max_field_chars`, `request_token_budget`, `max_questions_per_request` | 4,000, 48,000, 200 | Request packing limits. |
 | `queue_name` | `:default` | Queue for every Truffler job. |
 | `cost_per_million_tokens` | 0.042 | Jev input price, used in usage events and estimates. |
-| `backfill_spend_cap` | nil | Dollar cap per backfill run. Supplied labels cost nothing and are still written once it is reached. |
+| `backfill_spend_cap` | 5.0 | Dollar cap per backfill run (`BackfillJob` chains, `ResumeJob` backfills, and `truffler:backfill`). `nil` disables it; for the rake task, `SPEND_CAP=none` does. Supplied labels cost nothing and are still written once it is reached. |
 | `resume_pending_after` | 5 minutes | How long before `ResumeJob` treats work as stuck. |
 | `embedder` | `Embeddings::RubyLLMEmbedder.new` | Any `Embeddings::Embedder` subclass. The default calls `RubyLLM.embed`, which works on ruby_llm 1.x and 2. |
 | `embedding_cost_per_million_tokens` | 0.02 | Embedding price. |
@@ -348,7 +348,7 @@ Truffler enqueues most of its own jobs. Run a worker for `config.queue_name` and
 | `Truffler::Jobs::ResumeJob` | Every few minutes. Requeues failed and stuck labeling after an outage or a crashed worker, and enqueues up to 1,000 missing or stale embeddings per model per hour. |
 | `Truffler::Jobs::PruneQueryMissesJob` | Daily. Enforces `miss_retention`. |
 | `Truffler::Jobs::ExpireLensesJob` | Daily. Expires lenses unused for `lenses.expire_after`. |
-| `bin/rails "truffler:backfill[Email]"` (`SPEND_CAP=5`) or `Truffler::Jobs::BackfillJob.perform_later("Email")` | After adopting Truffler, changing a declaration, or changing the model pin. |
+| `bin/rails "truffler:backfill[Email]"` (`SPEND_CAP=20`, or `none`; default `backfill_spend_cap`) or `Truffler::Jobs::BackfillJob.perform_later("Email")` | After adopting Truffler, changing a declaration, or changing the model pin. |
 | `Truffler::Embeddings::Backfill.new(Email).enqueue` | After enabling embeddings or changing the embedding model, width, or fields, to re-embed everything now instead of through the `ResumeJob` sweep. It enqueues 1,000 jobs at a time; pass `limit:` to cap the total. |
 
 `bin/rails "truffler:status[Email]"` prints labeling counts. `bin/rails "truffler:suggestions[Email]"` prints candidate questions drawn from logged query misses.

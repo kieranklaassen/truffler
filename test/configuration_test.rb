@@ -11,6 +11,10 @@ class ConfigurationTest < Truffler::TestCase
     end
   end
 
+  test "0.1.1: automatic and rake backfills are capped at 5 USD by default" do
+    assert_in_delta 5.0, Truffler::Configuration.new.backfill_spend_cap
+  end
+
   test "TYPESAFE_REQUESTS_PER_MINUTE overrides the per-minute limit" do
     config = Truffler::Configuration.new(env: { "TYPESAFE_REQUESTS_PER_MINUTE" => "600" })
 
