@@ -117,4 +117,35 @@ class SearchFillerTest < Truffler::TestCase
 
     assert_equal %w[urgent], encoding.without([ "urgent" ]).keyword_tokens
   end
+
+  test "0.1.5: removing the last label chip keeps filler dropped while the time chip remains" do
+    @fake.answer("intent__urgent", "filter")
+    labeled = email_at("Refund issued", NOW - 1.day).tap { |email| label!(email, urgent: 0.9) }
+    this_week = email_at("Lunch plans", NOW - 1.day)
+    old = email_at("Messages piling up", NOW - 30.days)
+
+    encoding = encode("messages this week")
+    assert_empty encoding.keyword_tokens
+    assert_equal %w[messages], encoding.filler_tokens
+    assert_equal [ labeled.id ], search(InboxEmail, "messages this week").records.map(&:id)
+
+    unchipped = search(InboxEmail, "messages this week", suppressed: [ "urgent" ])
+    assert_equal [ labeled.id, this_week.id ].sort, unchipped.records.map(&:id).sort
+    assert_equal :time, unchipped.chips.sole[:kind]
+
+    both = search(InboxEmail, "messages this week", suppressed: %w[urgent time])
+    assert_equal [ old.id ], both.records.map(&:id)
+  end
+
+  test "0.1.5: removing a label chip frees its word, and filler stays dropped beside it, with or without time" do
+    @fake.answer("intent__urgent", "filter")
+    this_week = email_at("Urgent refund", NOW - 1.day)
+    old = email_at("Urgent refund", NOW - 30.days)
+
+    encode("urgent messages this week")
+
+    assert_equal [ this_week.id ], search(InboxEmail, "urgent messages this week", suppressed: [ "urgent" ]).records.map(&:id)
+    assert_equal [ this_week.id, old.id ].sort,
+      search(InboxEmail, "urgent messages this week", suppressed: %w[urgent time]).records.map(&:id).sort
+  end
 end

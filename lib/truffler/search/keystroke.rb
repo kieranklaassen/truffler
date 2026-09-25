@@ -41,7 +41,7 @@ module Truffler
         explicit_action = surface_action
         cached = read_encoding
         status = encoding_status(cached)
-        encoding = with_time(visible_lenses_only(cached&.without(suppressed), record_usage: true))
+        encoding = visible_lenses_only(with_time(cached)&.without(suppressed), record_usage: true)
         sql = sql(encoding)
         records = sql.relation(scope, limit: limit).to_a
         result = Result.new(records: records, query: query, encoding: encoding, encoding_status: status, watermark: watermark,
@@ -54,7 +54,7 @@ module Truffler
       # How many records the same search would return that arrived after
       # `since` (R25). Reads the cache only and never prefetches.
       def count(since:)
-        sql(with_time(visible_lenses_only(read_encoding&.without(suppressed)))).candidates(scope)
+        sql(visible_lenses_only(with_time(read_encoding)&.without(suppressed))).candidates(scope)
           .where(model.arel_table[@definition.arrived_at_column].gt(since)).count
       end
 
@@ -94,7 +94,8 @@ module Truffler
       end
 
       # The query's time phrase, resolved on this search's clock, unless the
-      # searcher removed its chip.
+      # searcher removed its chip. Attached before `without`, which keeps
+      # filler dropped while a time range still anchors the search.
       def with_time(encoding)
         phrase = query.time_phrase
         return encoding if phrase.nil? || suppressed.include?(TimeRange.key)
