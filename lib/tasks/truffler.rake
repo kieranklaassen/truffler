@@ -47,9 +47,7 @@ namespace :truffler do
     puts summary
   end
 
-  desc "Print a model's labeling counts by status and staleness"
-  task :status, [ :model ] => :setup do |_, args|
-    model = resolve_model.call(args[:model])
+  print_status = lambda do |model|
     puts model.name
     Truffler::Labeling::Backfill.status(model).each { |key, count| puts format("  %-9s %d", key, count) }
     if Truffler::Records::BackfillSpend.available?
@@ -59,6 +57,18 @@ namespace :truffler do
         Truffler::Labeling::Backfill.ledger_version(model).first(12), cap ? format("$%.2f", cap) : "none")
     else
       puts format("  %-9s %s", "spent", "not tracked across runs; run bin/rails g truffler:upgrade && bin/rails db:migrate")
+    end
+  end
+
+  desc "Print a model's labeling counts by status and staleness (every registered Truffler model when none is named)"
+  task :status, [ :model ] => :setup do |_, args|
+    if args[:model].to_s.strip.empty?
+      Rails.application.eager_load! if defined?(Rails.application) && Rails.application
+      models = Truffler.registry.models.select { |model| model.try(:truffler_definition) }.sort_by(&:name)
+      abort "No Truffler models are registered" if models.empty?
+      models.each(&print_status)
+    else
+      print_status.call(resolve_model.call(args[:model]))
     end
   end
 end

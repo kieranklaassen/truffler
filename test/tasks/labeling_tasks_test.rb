@@ -200,6 +200,29 @@ class LabelingTasksTest < Truffler::TestCase
     assert_match(/SPEND_CAP/, error)
   end
 
+  test "0.1.4: status with no model prints every registered Truffler model" do
+    create_emails(1)
+
+    output, error = capture_io do
+      @rake["truffler:status"].invoke
+    rescue SystemExit
+      nil
+    end
+
+    assert_empty error
+    Truffler.registry.models.each { |model| assert_match(/^#{model.name}$/, output) }
+    assert_includes Truffler.registry.models, Email
+    assert_match(/^Email\n\s+total\s+1/, output)
+  end
+
+  test "0.1.4: status with an unknown model still aborts with a clear message" do
+    _, error = capture_io do
+      assert_raises(SystemExit) { @rake["truffler:status"].invoke("Nope") }
+    end
+
+    assert_match(/Nope is not a Truffler model/, error)
+  end
+
   test "an unknown model aborts with a message" do
     _, error = capture_io do
       assert_raises(SystemExit) { @rake["truffler:status"].invoke("Nope") }
