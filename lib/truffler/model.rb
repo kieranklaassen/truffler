@@ -77,10 +77,10 @@ module Truffler
       end
 
       changed = saved_changes.keys
-      if changed.intersect?([ *definition.fields, definition.tenant_column ].compact)
+      if changed.intersect?(definition.relabel_columns)
         truffler_expire_labels
       else
-        watched = definition.supplied_labels.select { |label| changed.intersect?(label.watch) }
+        watched = definition.labels.values.select { |label| changed.intersect?(label.watch) }
         return if watched.empty?
 
         truffler_expire_labels(watched.map(&:key))
@@ -103,7 +103,7 @@ module Truffler
     def truffler_enqueue_embedding
       definition = self.class.truffler_definition
       return unless Embeddings.managed?(definition)
-      return unless previously_new_record? || saved_changes.keys.intersect?([ *definition.fields, definition.tenant_column ].compact)
+      return unless previously_new_record? || saved_changes.keys.intersect?(definition.relabel_columns)
 
       Jobs::EmbedJob.perform_later(self.class.polymorphic_name, id)
     end

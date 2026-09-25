@@ -4,7 +4,7 @@ module Truffler
     EXPLICIT_ACTIONS = %i[enter key row].freeze
     DEFAULT_EMBEDDINGS = { model: "text-embedding-3-small", dimensions: 256 }.freeze
 
-    attr_reader :model, :fields, :labels, :exact_sources, :providers, :surfaces
+    attr_reader :model, :fields, :labels, :exact_sources, :providers, :surfaces, :watch_columns
     attr_accessor :tenant_column, :keyword, :embeddings, :order, :arrived_at_column
 
     def initialize(model)
@@ -14,6 +14,7 @@ module Truffler
       @exact_sources = {}
       @providers = {}
       @surfaces = {}
+      @watch_columns = []
       @arrived_at_column = "created_at"
     end
 
@@ -37,6 +38,13 @@ module Truffler
 
     def supplied_labels
       labels.values.select(&:supplied?)
+    end
+
+    # Columns whose change relabels every label: the column-backed fields,
+    # the tenant column, and the model-level `watch` columns. Method-backed
+    # fields never show up in saved_changes, so they need `watch`.
+    def relabel_columns
+      [ *fields, tenant_column, *watch_columns ].compact
     end
 
     def per_tenant_vocabulary?
@@ -89,7 +97,7 @@ module Truffler
 
         model.reset_column_information
       end
-      check_columns([ tenant_column, *fields, *Array(keyword).grep(String), *supplied_labels.flat_map(&:watch) ].compact.uniq)
+      check_columns([ tenant_column, *fields, *Array(keyword).grep(String), *watch_columns, *labels.values.flat_map(&:watch) ].compact.uniq)
       @columns_checked = true
     end
 
@@ -143,6 +151,10 @@ module Truffler
 
       def reads(*fields)
         @definition.fields.concat(fields.map(&:to_s))
+      end
+
+      def watch(*columns)
+        @definition.watch_columns.concat(columns.map(&:to_s))
       end
 
       def label(key, type, **options)

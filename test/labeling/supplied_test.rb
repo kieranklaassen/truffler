@@ -80,9 +80,9 @@ class SuppliedLabelsTest < Truffler::TestCase
     assert_raises(Truffler::DefinitionError) { LabelDefinition.new(:anger, :noul) }
   end
 
-  test "from: must be callable, and watch: and version: need from:" do
+  test "from: must be callable, and version: needs from:" do
     assert_raises(Truffler::DefinitionError) { LabelDefinition.new(:anger, :noul, from: :anger) }
-    assert_raises(Truffler::DefinitionError) { LabelDefinition.new(:anger, :noul, question: "Angry?", watch: [ :anger ]) }
+    assert_equal %w[anger], LabelDefinition.new(:anger, :noul, question: "Angry?", watch: [ :anger ]).watch
     assert_raises(Truffler::DefinitionError) { LabelDefinition.new(:anger, :noul, question: "Angry?", version: 2) }
   end
 
