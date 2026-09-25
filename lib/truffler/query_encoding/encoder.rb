@@ -120,6 +120,7 @@ module Truffler
         filters = {}
         boosts = {}
         intent = {}
+        stems = []
         terms = []
         labels(model, tenant_key, user_key).each_value do |label|
           key = storage_key(label, answers, tenant_key)
@@ -133,11 +134,12 @@ module Truffler
             boosts[key] = intent[key] = label.boost || DEFAULT_BOOST
           else next
           end
-          terms.concat(label_terms(key, option_name(label, key, tenant_key)))
+          stems.concat(label_terms(key))
+          terms.concat(name_terms(option_name(label, key, tenant_key)))
         end
 
         query = Search::Query.new(request.state["query"])
-        roles = reconcile(query, request.token_ids.transform_values { |id| answers.choice(id) }, terms.uniq)
+        roles = reconcile(query, request.token_ids.transform_values { |id| answers.choice(id) }, stems.uniq, terms.uniq)
         keyword_tokens = query.tokens.each_index.filter_map { |position| query.tokens[position] if roles[position] == "keyword" }
         label_term_tokens = query.tokens.each_index.filter_map { |position| query.tokens[position] if roles[position] == "label_term" }
         Search::Encoding.new(filters: filters, boosts: boosts, intent_vector: intent, keyword_tokens: keyword_tokens,
@@ -205,30 +207,36 @@ module Truffler
       # exact tokens and unasked words are keywords; a keyword naming an
       # applied label becomes a label term; stopwords become filler unless
       # they are all that would be left of an encoding that applies nothing.
-      def reconcile(query, answered, terms)
+      def reconcile(query, answered, stems, terms)
         roles = query.tokens.each_index.to_h do |position|
           [ position, query.time_position?(position) ? "time" : answered.fetch(position, "keyword") ]
         end
         words = roles.keys.select { |position| roles[position] == "keyword" && !query.exact_tokens.include?(query.tokens[position]) }
-        words.each { |position| roles[position] = "label_term" if names_label?(query.tokens[position], terms) }
+        words.each { |position| roles[position] = "label_term" if names_label?(query.tokens[position], stems, terms) }
         stopwords = words.select { |position| roles[position] == "keyword" && STOPWORDS.include?(query.tokens[position]) }
-        return roles if terms.empty? && roles.values.count("keyword") == stopwords.size
+        return roles if stems.empty? && roles.values.count("keyword") == stopwords.size
 
         stopwords.each { |position| roles[position] = "filler" }
         roles
       end
 
       # "category:billing" names "category" and "billing"; "needs_action"
-      # names "needs_action", "needs", and "action". An option's display
-      # name adds its words minus stopwords: "p_17" shown as "Spiral writing
-      # tool" also names "spiral", "writing", and "tool".
+      # names "needs_action", "needs", and "action". These key terms also
+      # match by shared stem (see names_label?).
       STEM = 3
 
-      def label_terms(storage_key, option_name = nil)
+      def label_terms(storage_key)
         label, option = Search::Encoding.split_key(storage_key)
-        keys = [ label.split(":").last, option ].compact.flat_map { |name| [ name.downcase, *name.downcase.split(/[^\p{Alnum}]+/) ] }
-        words = option_name.to_s.downcase.split(/[^\p{Alnum}]+/).reject { |word| STOPWORDS.include?(word) }
-        (keys + words).reject(&:empty?).map(&:singularize)
+        [ label.split(":").last, option ].compact.flat_map { |name| [ name.downcase, *name.downcase.split(/[^\p{Alnum}]+/) ] }
+          .reject(&:empty?).map(&:singularize)
+      end
+
+      # An option's display name adds its words minus stopwords: "p_17" shown
+      # as "Spiral writing tool" names "spiral", "writing", and "tool". These
+      # match exactly only: descriptions are prose, and a stem match on them
+      # would swallow ordinary search words ("chat" against "charge").
+      def name_terms(option_name)
+        option_name.to_s.downcase.split(/[^\p{Alnum}]+/).reject { |word| word.empty? || STOPWORDS.include?(word) }.map(&:singularize)
       end
 
       def option_name(label, storage_key, tenant_key)
@@ -237,12 +245,13 @@ module Truffler
         label.options(tenant_key)[Search::Encoding.split_key(storage_key).last]
       end
 
-      # "angry" names "anger": the same word ignoring plurals, or two words of
-      # four letters or more that share their first three letters. Only the
-      # applied labels' terms are compared, so the loose match stays safe.
-      def names_label?(word, terms)
+      # "angry" names "anger": the same word ignoring plurals, or, against a
+      # label or option key, two words of four letters or more that share
+      # their first three letters. Display-name words match exactly.
+      def names_label?(word, stems, terms)
         word = word.singularize
-        terms.any? { |term| term == word || (word.length > STEM && term.length > STEM && word[0, STEM] == term[0, STEM]) }
+        terms.include?(word) ||
+          stems.any? { |term| term == word || (word.length > STEM && term.length > STEM && word[0, STEM] == term[0, STEM]) }
       end
 
       def intent_instructions(label)
