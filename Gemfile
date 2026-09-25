@@ -9,3 +9,7 @@ gem "rubocop-rails-omakase", require: false
 gem "ruby_llm", "~> 2.0", require: false
 gem "ruby_llm-typesafe", require: false
 gem "sqlite3", ">= 2.1"
+
+group :test do
+  gem "pg", ">= 1.5"
+end
