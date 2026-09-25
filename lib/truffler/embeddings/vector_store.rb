@@ -58,7 +58,7 @@ module Truffler
             fingerprint: fingerprint, embedding: Records::Embedding.encode(vector), dimensions: vector.size,
             created_at: now, updated_at: now },
           unique_by: %i[record_type record_id],
-          update_only: %i[tenant_key fingerprint embedding dimensions updated_at]
+          update_only: %i[tenant_key fingerprint embedding dimensions]
         )
       end
 

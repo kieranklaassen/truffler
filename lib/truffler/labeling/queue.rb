@@ -21,7 +21,7 @@ module Truffler
           { record_type: record_type, record_id: record.id, tenant_key: tenant_key, status: "pending",
             priority: priority.to_s, attempts: 0, created_at: now, updated_at: now },
           unique_by: %i[record_type record_id],
-          update_only: %i[tenant_key status priority attempts updated_at]
+          update_only: %i[tenant_key status priority attempts]
         )
         schedule(tenant_key)
       end

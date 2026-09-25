@@ -33,7 +33,7 @@ module Truffler
             label_vocabulary_version: version, created_at: now, updated_at: now }
         end
         Records::Embedding.upsert_all(rows, unique_by: %i[record_type record_id],
-          update_only: %i[tenant_key label_vector label_vocabulary_version updated_at])
+          update_only: %i[tenant_key label_vector label_vocabulary_version])
         rows.size
       end
 
