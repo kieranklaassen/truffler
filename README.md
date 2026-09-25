@@ -228,22 +228,7 @@ Email.jev_new_matches_count(params[:q], tenant: account.id, scope: account.email
 The keystroke query is shaped so a large tenant (tens of thousands of records) stays fast on Postgres:
 
 - Return ids from `keyword` and `exact` callables when you can, e.g. `.limit(2_000).pluck(:id)` from a blind index. Ids become a literal `IN (...)` list. A returned relation is rendered as `id = ANY(ARRAY(subquery))` on Postgres (plain `IN (subquery)` elsewhere), so it runs once instead of as a hashed filter over every tenant row, but the id list is still faster.
-- Label-only and filtered searches, where every record past the tenant and filters is a candidate, read label scores from one grouped aggregate over `truffler_labels` joined on `record_id`, never a subquery per row. New installs get `index_truffler_labels_for_search` with `INCLUDE (record_id)`, which makes that aggregate an index-only scan. On an existing install, add it with a migration (Postgres 11+):
-
-  ```ruby
-  class CoverTrufflerLabelsForSearch < ActiveRecord::Migration[8.0]
-    disable_ddl_transaction!
-
-    def change
-      add_index :truffler_labels, [:record_type, :tenant_key, :label_key, :value], include: [:record_id],
-        name: "index_truffler_labels_for_search_covering", algorithm: :concurrently
-      remove_index :truffler_labels, [:record_type, :tenant_key, :label_key, :value], name: "index_truffler_labels_for_search",
-        algorithm: :concurrently
-    end
-  end
-  ```
-
-  It is optional: the grouped aggregate already replaces the per-row subquery, and the index only saves heap reads.
+- Label-only and filtered searches, where every record past the tenant and filters is a candidate, read label scores from one grouped aggregate over `truffler_labels` joined on `record_id`, never a subquery per row. New installs get `index_truffler_labels_for_search` with `INCLUDE (record_id)`, which makes that aggregate an index-only scan. On an existing Postgres install, `bin/rails generate truffler:upgrade && bin/rails db:migrate` adds it (built concurrently, then the old index is dropped). It is optional: the grouped aggregate already replaces the per-row subquery, and the index only saves heap reads.
 - With embeddings on Postgres, text similarity comes from the tenant's top `k` neighbors (`ORDER BY embedding <=> q LIMIT k`), joined on `record_id`. An HNSW index on `truffler_embeddings.embedding` serves it. Records outside the top `k` score no text similarity; see `vector_store` under [Configuration](#configuration).
 - The plans these queries produce are costed high enough that Postgres JIT often compiles them, which can add 0.3 to 0.9 s to a query that runs in tens of milliseconds. Turn JIT off for the keystroke only:
 
