@@ -282,11 +282,11 @@ Truffler enqueues most of its own jobs. Run a worker for `config.queue_name` and
 
 | Job or task | When |
 |---|---|
-| `Truffler::Jobs::ResumeJob` | Every few minutes. Requeues failed and stuck labeling after an outage or a crashed worker. |
+| `Truffler::Jobs::ResumeJob` | Every few minutes. Requeues failed and stuck labeling after an outage or a crashed worker, and enqueues up to 1,000 missing or stale embeddings per model per hour. |
 | `Truffler::Jobs::PruneQueryMissesJob` | Daily. Enforces `miss_retention`. |
 | `Truffler::Jobs::ExpireLensesJob` | Daily. Expires lenses unused for `lenses.expire_after`. |
 | `bin/rails "truffler:backfill[Email]"` (`SPEND_CAP=5`) or `Truffler::Jobs::BackfillJob.perform_later("Email")` | After adopting Truffler, changing a declaration, or changing the model pin. |
-| `Truffler::Embeddings::Backfill.new(Email).enqueue` | After enabling embeddings or changing the embedding model, width, or fields. |
+| `Truffler::Embeddings::Backfill.new(Email).enqueue` | After enabling embeddings or changing the embedding model, width, or fields, to re-embed everything now instead of through the `ResumeJob` sweep. It enqueues 1,000 jobs at a time; pass `limit:` to cap the total. |
 
 `bin/rails "truffler:status[Email]"` prints labeling counts. `bin/rails "truffler:suggestions[Email]"` prints candidate questions drawn from logged query misses.
 

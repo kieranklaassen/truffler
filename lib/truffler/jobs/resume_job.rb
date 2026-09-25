@@ -4,9 +4,16 @@ module Truffler
     # after a Jev outage or a crashed worker. It returns failed rows and rows
     # stuck in labeling to pending, reschedules a flush for tenants whose live
     # rows have waited past `resume_pending_after`, and starts a backfill for
-    # rows waiting at backfill priority. Pass a record type to sweep one model.
+    # rows waiting at backfill priority. For models with gem-managed
+    # embeddings it also enqueues up to `embedding_sweep_limit` missing or
+    # stale embeddings, at most once per `embedding_sweep_interval`, so an
+    # embedder outage cannot pile duplicate jobs onto the queue. Pass a record
+    # type to sweep one model.
     class ResumeJob < ActiveJob::Base
       queue_as { Truffler.config.queue_name }
+
+      class_attribute :embedding_sweep_limit, default: 1_000
+      class_attribute :embedding_sweep_interval, default: 1.hour
 
       def perform(record_type = nil)
         models = record_type ? [ record_type.safe_constantize ].compact : Truffler.registry.models
@@ -31,6 +38,16 @@ module Truffler
 
         backfill = requeued.any? { |_, priority| priority == "backfill" } || waiting.exists?(priority: "backfill")
         BackfillJob.perform_later(model.polymorphic_name) if backfill
+        sweep_embeddings(model)
+      end
+
+      def sweep_embeddings(model)
+        return unless Embeddings.managed?(model.truffler_definition)
+
+        marker = "truffler:embedding_sweep:#{model.polymorphic_name}"
+        return unless Truffler.config.cache_store.write(marker, true, unless_exist: true, expires_in: embedding_sweep_interval)
+
+        Embeddings::Backfill.new(model).enqueue(limit: embedding_sweep_limit)
       end
 
       # Returns the distinct [tenant_key, priority] pairs it moved to pending.

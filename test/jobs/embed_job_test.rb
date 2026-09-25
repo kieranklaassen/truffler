@@ -116,6 +116,50 @@ class EmbedJobTest < Truffler::TestCase
     assert_enqueued_with(job: EmbedJob, args: [ "EmbeddedNote", older.id ])
   end
 
+  test "backfill enqueues in cursor batches and stops at the limit" do
+    notes = Array.new(5) { create_note }
+    clear_enqueued_jobs
+    batches = []
+    subscriber = ActiveSupport::Notifications.subscribe("enqueue_all.active_job") { |*, payload| batches << payload[:jobs].size }
+
+    assert_equal 4, Truffler::Embeddings::Backfill.new(EmbeddedNote).enqueue(limit: 4, batch_size: 2)
+    assert_equal [ 2, 2 ], batches
+    assert_equal notes.last(4).map(&:id).sort, enqueued_jobs.map { |job| job[:args].last }.sort
+
+    clear_enqueued_jobs
+    batches.clear
+    assert_equal 5, Truffler::Embeddings::Backfill.new(EmbeddedNote).enqueue(batch_size: 2)
+    assert_equal [ 2, 2, 1 ], batches
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+  end
+
+  test "the resume sweep enqueues a bounded embeddings backfill once per interval" do
+    3.times { create_note }
+    clear_enqueued_jobs
+
+    previous = Truffler::Jobs::ResumeJob.embedding_sweep_limit
+    Truffler::Jobs::ResumeJob.embedding_sweep_limit = 2
+
+    Truffler::Jobs::ResumeJob.perform_now("EmbeddedNote")
+    assert_enqueued_jobs 2, only: EmbedJob
+
+    clear_enqueued_jobs
+    Truffler::Jobs::ResumeJob.perform_now("EmbeddedNote")
+    assert_no_enqueued_jobs only: EmbedJob
+  ensure
+    Truffler::Jobs::ResumeJob.embedding_sweep_limit = previous
+  end
+
+  test "the resume sweep leaves host-maintained vector columns alone" do
+    ColumnDocument.create!(account_id: 1, title: "Escrow")
+    clear_enqueued_jobs
+
+    Truffler::Jobs::ResumeJob.perform_now("ColumnDocument")
+
+    assert_no_enqueued_jobs only: EmbedJob
+  end
+
   test "a deleted record drops its embedding row" do
     note = create_note
     perform_enqueued_jobs(only: EmbedJob)

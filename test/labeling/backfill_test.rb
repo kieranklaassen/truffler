@@ -144,7 +144,7 @@ class BackfillTest < Truffler::TestCase
     flaky = FlakyClient.new(succeed: 1)
     Truffler.config.client = flaky
 
-    assert_raises(Truffler::ClientError) { Backfill.new(Email, batch_size: 2).run }
+    assert_equal :client_error, Backfill.new(Email, batch_size: 2).run.status
     assert_equal 2, State.where(status: "labeled").count
 
     Truffler.config.client = @fake

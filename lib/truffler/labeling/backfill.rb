@@ -10,7 +10,8 @@ module Truffler
     # Resumable: the cursor moves past a page only once the whole page is
     # done, and records already current are skipped, so a rerun never asks
     # Jev about them again. A spend cap stops the run before a request would
-    # exceed it.
+    # exceed it. A Jev error releases the claimed rows and ends the run with
+    # `:client_error`, so the caller keeps the spend metered so far.
     class Backfill
       Result = Data.define(:status, :labeled, :requests, :cost, :cursor)
 
@@ -182,7 +183,7 @@ module Truffler
           return error.is_a?(SpendCapReached) ? :spend_cap_reached : :budget_denied
         rescue ClientError, IncompleteAnswers => error
           queue.release(claimed, error)
-          raise
+          return :client_error
         ensure
           @labeled += Records::RecordState.where(id: claimed.map(&:id), status: "labeled").count
         end

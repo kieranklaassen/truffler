@@ -5,6 +5,26 @@ class BackfillJobTest < Truffler::TestCase
   State = Truffler::Records::RecordState
   BackfillJob = Truffler::Jobs::BackfillJob
 
+  # Each successful request reports one million input tokens, so it costs
+  # exactly `cost_per_million_tokens`; the listed call numbers fail with a 503.
+  class MeteredFlakyClient < Truffler::Clients::Fake
+    attr_reader :paid
+
+    def initialize(fail_on:)
+      super()
+      @fail_on = fail_on
+      @paid = 0
+    end
+
+    def perform(**)
+      response = super
+      raise Truffler::Test::HttpError.new(503, "Service Unavailable") if @fail_on.include?(calls.size)
+
+      @paid += 1
+      response.merge("usage" => { "input_tokens" => 1_000_000 })
+    end
+  end
+
   setup do
     @fake = Truffler::Clients::Fake.new
     Truffler.config.client = @fake
@@ -107,10 +127,51 @@ class BackfillJobTest < Truffler::TestCase
     create_emails(1)
     @fake.fail_with(Truffler::Test::HttpError.new(503, "Service Unavailable"))
 
-    BackfillJob.perform_now("Email")
+    payloads = capture_notifications("truffler.backfill") { BackfillJob.perform_now("Email") }
 
     assert_equal [ [ "pending", "backfill", 1 ] ], State.pluck(:status, :priority, :attempts)
-    assert_enqueued_jobs 1, only: BackfillJob
+    assert_equal [ :client_error ], payloads.map { |payload| payload[:outcome] }
+    job = enqueued_jobs.sole
+    assert job[:at], "the retry waits before asking Jev again"
+    assert_equal 1, ActiveJob::Arguments.deserialize(job[:args]).last[:attempt]
+  end
+
+  test "a retry after a Jev error carries the spend made before the error" do
+    create_emails(6)
+    Truffler.config.batch_size = 2
+    Truffler.config.client = MeteredFlakyClient.new(fail_on: [ 3 ])
+    price = Truffler.config.cost_per_million_tokens
+
+    BackfillJob.perform_now("Email")
+
+    arguments = ActiveJob::Arguments.deserialize(enqueued_jobs.sole[:args]).last
+    assert_equal 4, State.where(status: "labeled").count
+    assert_in_delta 2 * price, arguments[:spent], 1e-12
+    assert_equal 1, arguments[:attempt]
+  end
+
+  test "the spend cap holds across retries" do
+    create_emails(10)
+    Truffler.config.batch_size = 2
+    client = MeteredFlakyClient.new(fail_on: [ 3 ])
+    Truffler.config.client = client
+    price = Truffler.config.cost_per_million_tokens
+
+    BackfillJob.perform_now("Email", spend_cap: 2.5 * price)
+    drain_jobs
+
+    assert_equal 3, client.paid, "the retry resumes from the spend already made"
+    assert_equal 6, State.where(status: "labeled").count
+  end
+
+  test "gives up after the last retry and leaves rows pending for the resume sweep" do
+    create_emails(1)
+    @fake.fail_with(Truffler::Test::HttpError.new(503, "Service Unavailable"))
+
+    BackfillJob.perform_now("Email", attempt: BackfillJob::MAX_ATTEMPTS - 1)
+
+    assert_no_enqueued_jobs only: BackfillJob
+    assert_equal [ "pending" ], State.pluck(:status)
   end
 
   test "a model that is not declared does nothing" do

@@ -99,4 +99,4 @@ Cora runs on Postgres with pgvector, uses ruby_llm 1.x with its own `TypeSafeCli
 7. Map Cora's categories onto `choice` labels. Per-tenant categories can use `options: ->(tenant_key) { ... }`.
 8. Run the benchmark at Cora scale (`MODE=synthetic BENCH_RECORDS=...`) and load-test keystroke p95 against the `truffler_labels` index size.
 9. Ask TypeSafe for a higher rate limit, then set `TYPESAFE_REQUESTS_PER_MINUTE`. Cora's other Jev calls share the account, so keep `headroom`.
-10. Schedule `ResumeJob`, `PruneQueryMissesJob`, and `ExpireLensesJob`. Run the label backfill with a `SPEND_CAP` and the embeddings backfill (`Truffler::Embeddings::Backfill.new(Email).enqueue`).
+10. Schedule `ResumeJob`, `PruneQueryMissesJob`, and `ExpireLensesJob`. Run the label backfill with a `SPEND_CAP` and the embeddings backfill (`Truffler::Embeddings::Backfill.new(Email).enqueue`; `ResumeJob` also re-embeds stale records, 1,000 per model per hour).
