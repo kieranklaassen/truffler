@@ -34,11 +34,22 @@ bin/rails db:migrate
 
 The generator writes three files:
 
-- A migration that creates `truffler_labels`, `truffler_record_states`, `truffler_embeddings`, `truffler_query_misses`, `truffler_lenses`, and `truffler_lens_versions`.
+- A migration that creates `truffler_labels`, `truffler_record_states`, `truffler_embeddings`, `truffler_query_misses`, `truffler_lenses`, `truffler_lens_versions`, and `truffler_backfill_spends`.
 - `config/initializers/truffler.rb`.
 - `app/channels/truffler_channel.rb`.
 
 It takes two options. `--record-id-type=bigint|integer|string|uuid` must match your primary keys. `--vector-dimensions=N` stores embeddings in a pgvector column of that width; it needs Postgres and the `neighbor` gem, which provides the `t.vector` column type.
+
+### Upgrading from 0.1.1
+
+0.1.2 adds the `truffler_backfill_spends` table, which keeps the backfill spend cap across runs. Add it with:
+
+```bash
+bin/rails generate truffler:upgrade
+bin/rails db:migrate
+```
+
+The migration creates only that table and skips it if it already exists. Until you run it, backfills log one warning and cap spend per run, as 0.1.1 did.
 
 Truffler digests user keys and query misses with `secret_key_base`. Rails supplies it automatically; outside Rails, set `config.secret_key_base`.
 
@@ -327,7 +338,7 @@ Set these in `Truffler.configure do |config| ... end`.
 | `max_field_chars`, `request_token_budget`, `max_questions_per_request` | 4,000, 48,000, 200 | Request packing limits. |
 | `queue_name` | `:default` | Queue for every Truffler job. |
 | `cost_per_million_tokens` | 0.042 | Jev input price, used in usage events and estimates. |
-| `backfill_spend_cap` | 5.0 | Dollar cap per backfill run (`BackfillJob` chains, `ResumeJob` backfills, and `truffler:backfill`). `nil` disables it; for the rake task, `SPEND_CAP=none` does. Supplied labels cost nothing and are still written once it is reached. |
+| `backfill_spend_cap` | 5.0 | Dollar cap on backfill spend per model and vocabulary version, shared by `BackfillJob` chains, `ResumeJob` backfills, and `truffler:backfill` runs (see Backfill). `nil` disables it; for the rake task, `SPEND_CAP=none` does. Supplied labels cost nothing and are still written once it is reached. |
 | `resume_pending_after` | 5 minutes | How long before `ResumeJob` treats work as stuck. |
 | `embedder` | `Embeddings::RubyLLMEmbedder.new` | Any `Embeddings::Embedder` subclass. The default calls `RubyLLM.embed`, which works on ruby_llm 1.x and 2. |
 | `embedding_cost_per_million_tokens` | 0.02 | Embedding price. |
@@ -353,10 +364,10 @@ Truffler enqueues most of its own jobs. Run a worker for `config.queue_name` and
 | `Truffler::Jobs::ResumeJob` | Every few minutes. Requeues failed and stuck labeling after an outage or a crashed worker, and enqueues up to 1,000 missing or stale embeddings per model per hour. |
 | `Truffler::Jobs::PruneQueryMissesJob` | Daily. Enforces `miss_retention`. |
 | `Truffler::Jobs::ExpireLensesJob` | Daily. Expires lenses unused for `lenses.expire_after`. |
-| `bin/rails "truffler:backfill[Email]"` (`SPEND_CAP=20`, or `none`; default `backfill_spend_cap`) or `Truffler::Jobs::BackfillJob.perform_later("Email")` | After adopting Truffler, changing a declaration, or changing the model pin. |
+| `bin/rails "truffler:backfill[Email]"` (see Backfill) or `Truffler::Jobs::BackfillJob.perform_later("Email")` | After adopting Truffler, changing a declaration, or changing the model pin. |
 | `Truffler::Embeddings::Backfill.new(Email).enqueue` | After enabling embeddings or changing the embedding model, width, or fields, to re-embed everything now instead of through the `ResumeJob` sweep. It enqueues 1,000 jobs at a time; pass `limit:` to cap the total. |
 
-`bin/rails "truffler:status[Email]"` prints labeling counts. `bin/rails "truffler:suggestions[Email]"` prints candidate questions drawn from logged query misses.
+`bin/rails "truffler:status[Email]"` prints labeling counts and the backfill spend for the current vocabulary version. `bin/rails "truffler:suggestions[Email]"` prints candidate questions drawn from logged query misses.
 
 With Solid Queue, for example:
 
@@ -372,6 +383,18 @@ truffler_expire_lenses:
   class: Truffler::Jobs::ExpireLensesJob
   schedule: every day at 3am
 ```
+
+### Backfill
+
+`bin/rails "truffler:backfill[Email]"` labels missing, stale, and failed records inline, newest first, at backfill priority. Backfill has the lowest share of the request budget, so the task waits whenever the budget turns it away. It backs off 1 s, doubling to 30 s (or longer if the budget says a slot frees later), and resumes from the same cursor. It ends when every record is current (`complete`) or the spend cap is reached (`spend_cap_reached`). While it waits it prints the records labeled, the spend, and the cursor, never record text. Environment variables:
+
+| Variable | Effect |
+|---|---|
+| `SPEND_CAP=20` or `none` | Overrides `backfill_spend_cap` for this run. |
+| `MAX_DURATION=600` | Stops after that many seconds with `paused` and the cursor. Rerun to continue. |
+| `RESET_SPEND=1` | Zeroes the spend recorded for the current vocabulary version before starting. |
+
+The spend cap holds across runs. Truffler records backfill spend per model and app-wide vocabulary version in `truffler_backfill_spends`, and reserves each request's estimate against the cap in SQL. A rerun, a `ResumeJob` backfill, and overlapping `BackfillJob` chains all draw on the same total, so together they stop at `backfill_spend_cap`. Changing the vocabulary (a reworded question, a new label, or an activated lens) starts a new total. Lens backfills are capped separately by each lens's `spend_cap_usd`. `BackfillJob` reschedules itself after a denial with the same backoff. In code, `Truffler::Labeling::Backfill.new(Email).run(wait: true, max_duration: 600)` does what the task does.
 
 ## Privacy
 

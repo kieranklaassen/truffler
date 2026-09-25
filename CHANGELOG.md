@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2]
+
+Backfill fixes from happyhappy's production `churn_risk` backfill.
+
+- `rake truffler:backfill` waits out budget denials instead of ending on `budget_denied`. It backs off 1 s, doubling to 30 s (longer when the budget's new `Decision#retry_after` hint says so), and retries from the same cursor until the backfill completes or reaches the spend cap. `MAX_DURATION=<seconds>` stops it with `paused` and the cursor. While waiting it prints counts, spend, and the cursor, never record text. In code: `Labeling::Backfill#run(wait: true, max_duration:, sleeper:, clock:, progress:)`. `BackfillJob` reschedules denials with the same backoff (it used to wait a fixed 30 s), counting consecutive denials in its arguments.
+- The backfill spend cap holds across runs. Spend is recorded per model and app-wide vocabulary version in a new `truffler_backfill_spends` table. Each Jev request reserves its estimate against the cap in SQL, so rerunning the rake task or overlapping `BackfillJob` chains can no longer spend more than `backfill_spend_cap` for one vocabulary version. Before, overlapping chains could spend up to twice the cap. A vocabulary change starts a new ledger. `truffler:status` prints the spend for the current version, and `RESET_SPEND=1` zeroes it before a backfill. Lens backfills still charge only their lens row.
+- Upgrading from 0.1.1: run `bin/rails generate truffler:upgrade && bin/rails db:migrate` to add `truffler_backfill_spends`. Until you do, backfills log one warning and cap spend per run as in 0.1.1. Fresh installs get the table from `truffler:install`.
+
 ## [0.1.1]
 
 Fixes from the first host integration (happyhappy).
