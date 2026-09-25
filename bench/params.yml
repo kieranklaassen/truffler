@@ -1,0 +1,30 @@
+# Benchmark knobs (R36). `rake truffler:bench PARAMS=path` reads a file like
+# this one; omitted keys keep the defaults in Truffler::Benchmark::Params.
+labeling:
+  batch_size: 10                      # records claimed per labeling request
+  agreement_batch_sizes: [5, 10, 20]  # candidate packed sizes checked against single-record labels (R33)
+  agreement_sample_per_tenant: 20
+  agreement_tolerance: 0.15           # max noul/score delta that still counts as agreeing
+  agreement_floor: 0.95               # a batch size is adoptable at or above this agreement
+
+search:
+  thresholds:                         # filter_at per label; null means boost-only
+    needs_action: 0.6
+    urgent: null
+    category: 0.5
+    importance: null
+  boosts:                             # label boost weights in the KTD20 label term
+    needs_action: 2.0
+    urgent: 1.5
+    category: null
+    importance: 1.0
+  label_weight: 1.0                   # w_label in the KTD20 blend
+  text_weight: 0.0                    # w_text in the KTD20 blend
+  embeddings: false
+  encoding_deadline_ms: 1000
+
+rerank:
+  depth: 30                           # candidates sent to the Jev rerank
+
+injection:
+  label_tolerance: 0.15               # max label delta between an injection twin and its clean twin (R34)
