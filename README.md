@@ -53,6 +53,8 @@ The migration creates only that table and skips it if it already exists. Until y
 
 0.1.5 adds `truffler_backfill_spends.tenant_key` for per-tenant spend ledgers. The same `truffler:upgrade` command writes that migration. Until you run it, every tenant shares the model's app-wide ledger and a warning is logged once.
 
+`truffler:upgrade` is safe to rerun. It skips any migration already in `db/migrate` or already applied to the database, and writes only the missing ones.
+
 Truffler digests user keys and query misses with `secret_key_base`. Rails supplies it automatically; outside Rails, set `config.secret_key_base`.
 
 ## Declaring a model

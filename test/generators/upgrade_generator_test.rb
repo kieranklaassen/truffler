@@ -11,6 +11,16 @@ class UpgradeGeneratorTest < Rails::Generators::TestCase
     self.abstract_class = true
   end
 
+  setup do
+    Scratch.establish_connection(adapter: "sqlite3", database: ":memory:")
+    @previous_connection = Truffler::Generators::UpgradeGenerator.schema_connection
+    Truffler::Generators::UpgradeGenerator.schema_connection = -> { Scratch.connection }
+  end
+
+  teardown do
+    Truffler::Generators::UpgradeGenerator.schema_connection = @previous_connection
+  end
+
   test "0.1.2: writes a migration that adds only the backfill spend ledger" do
     run_generator
     assert_migration "db/migrate/add_tenant_key_to_truffler_backfill_spends.rb"
@@ -81,7 +91,52 @@ class UpgradeGeneratorTest < Rails::Generators::TestCase
     assert_equal 2, connection.indexes("truffler_backfill_spends").size
   end
 
+  test "0.1.5: rerunning is idempotent: no new files and no conflict, before and after migrating" do
+    first = run_generator
+    files = migration_files
+    second = run_generator
+
+    assert_equal 2, files.size
+    assert_equal files, migration_files
+    assert_no_match(/conflict|already named/i, first + second)
+    assert_match(/skip.*create_truffler_backfill_spends/, second)
+
+    migration.new.exec_migration(Scratch.connection, :up)
+    tenant_migration.new.exec_migration(Scratch.connection, :up)
+    third = run_generator
+    FileUtils.rm(files)
+    fourth = run_generator
+
+    assert_empty migration_files, "a migrated schema needs no new migration even when the files are gone"
+    assert_no_match(/conflict|already named/i, third + fourth)
+    assert_match(/skip.*add_tenant_key_to_truffler_backfill_spends/, fourth)
+  end
+
+  test "0.1.5: an app on the 0.1.2 ledger gets only the tenant_key migration" do
+    Scratch.connection.create_table(:truffler_backfill_spends) do |t|
+      t.string :record_type, null: false
+      t.string :vocabulary_version, null: false
+    end
+
+    output = run_generator
+
+    assert_equal [ "add_tenant_key_to_truffler_backfill_spends" ], migration_files.map { |path| File.basename(path, ".rb").sub(/\A\d+_/, "") }
+    assert_no_match(/conflict/i, output)
+  end
+
+  test "0.1.5: without a database connection it still writes the missing migrations" do
+    Truffler::Generators::UpgradeGenerator.schema_connection = -> { raise ActiveRecord::ConnectionNotEstablished }
+
+    run_generator
+
+    assert_equal 2, migration_files.size
+  end
+
   private
+
+  def migration_files
+    Dir[File.join(destination_root, "db/migrate/*.rb")].sort
+  end
 
   def migration
     load_migration("create_truffler_backfill_spends", :CreateTrufflerBackfillSpends)
