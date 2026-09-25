@@ -112,4 +112,19 @@ class LabelerTest < Truffler::TestCase
     assert_equal 0, State.count
     assert_empty @fake.calls
   end
+
+  test "editing a labeled record's text relabels every question" do
+    email = create_emails(1).sole
+    labeler = Truffler::Labeling::Labeler.new(Email)
+    labeler.label(claim, priority: :live)
+    calls = @fake.calls.size
+    @fake.answer(:needs_action, 0.1)
+
+    email.update!(body: "Never mind, all sorted")
+    assert_in_delta 0.8, Label.find_by!(record_id: email.id, label_key: "needs_action").value
+    labeler.label(claim, priority: :live)
+
+    assert_equal calls + 1, @fake.calls.size
+    assert_in_delta 0.1, Label.find_by!(record_id: email.id, label_key: "needs_action").value
+  end
 end

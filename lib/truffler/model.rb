@@ -35,7 +35,14 @@ module Truffler
       watched = [ *definition.fields, definition.tenant_column ].compact
       return unless previously_new_record? || saved_changes.keys.intersect?(watched)
 
+      truffler_expire_labels unless previously_new_record?
       Labeling::Queue.new(self.class).enqueue(self)
+    end
+
+    # Stored values keep serving search until the relabel lands; clearing the
+    # fingerprints is what makes the labeler ask every question again.
+    def truffler_expire_labels
+      Records::Label.where(record_type: self.class.polymorphic_name, record_id: id).update_all(fingerprint: "")
     end
 
     def truffler_forget
