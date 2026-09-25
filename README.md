@@ -170,10 +170,16 @@ The default client is `Truffler::Clients::RubyLLMTypeSafe`. It needs ruby_llm 2 
 If you already have a TypeSafe client, wrap it in `Truffler::Clients::Callable`. The wrapped object must respond to `evaluate(state:, schema:)`, and may also accept `model:`. It returns either the answers hash or `{"answers" => ..., "model" => ..., "usage" => {"input_tokens" => ...}}`:
 
 ```ruby
-config.client = Truffler::Clients::Callable.new(TypeSafeClient.new)
+config.client = Truffler::Clients::Callable.new(MyJevClient.new)
 ```
 
 `schema:` holds the questions in TypeSafe wire shape. When a response carries no token count, Truffler estimates it from the request size and flags the estimate. Errors reach you as `Truffler::ClientError`, carrying only the HTTP status and the error class name.
+
+If your client takes a schema object (it calls `schema.questions`) and returns an evaluation object with `answers`, `model`, and `input_tokens` readers rather than a hash, use `Truffler::Clients::Evaluator` instead. For any other shape, subclass `Truffler::Clients::Base` and implement `perform` (see [docs/host-integration.md](docs/host-integration.md)).
+
+```ruby
+config.client = Truffler::Clients::Evaluator.new(TypeSafeClient.new)
+```
 
 ## Keystroke search
 
