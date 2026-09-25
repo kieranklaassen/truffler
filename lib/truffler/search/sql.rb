@@ -30,10 +30,11 @@ module Truffler
         encoding.filters.reduce(scope) { |relation, (key, threshold)| relation.where(Arel.sql(label_filter_sql(key, threshold))) }
       end
 
-      # Every record the query can return, before ranking.
+      # Every record the query can return, before ranking. Under a label
+      # filter the filter decides membership and text matches only rank.
       def candidates(scope)
         base = base(scope)
-        return base if label_only?
+        return base if label_only? || encoding.filters.any?
 
         conditions = [ keyword_sql, exact_sql, (text_candidate_sql if text_score_sql) ].compact
         base.where(Arel.sql(conditions.any? ? conditions.map { |condition| "(#{condition})" }.join(" OR ") : "1 = 0"))

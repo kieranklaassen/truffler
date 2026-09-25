@@ -47,6 +47,23 @@ class SearchSqlTest < Truffler::TestCase
     assert_equal [ underscore.id ], search(InboxEmail, "a_c").records.map(&:id)
   end
 
+  test "0.1.1: with a label filter applied, keywords only add to the score instead of being required" do
+    hit = inbox_email!(subject: "Needs action now", labels: { needs_action: 0.7 })
+    miss = inbox_email!(subject: "Pay the plumber", labels: { needs_action: 0.9 })
+    inbox_email!(subject: "Needs action now", labels: { needs_action: 0.1 })
+    cache_encoding!(InboxEmail, "needs action now", filters: { needs_action: 0.6 }, keyword_tokens: %w[needs action now])
+
+    assert_equal [ hit.id, miss.id ], search(InboxEmail, "needs action now").records.map(&:id)
+  end
+
+  test "0.1.1: without a label filter, keywords stay required" do
+    hit = inbox_email!(subject: "Flight update", labels: { urgent: 0.1 })
+    inbox_email!(subject: "Lunch", labels: { urgent: 0.9 })
+    cache_encoding!(InboxEmail, "urgent flight", boosts: { urgent: 2.0 }, keyword_tokens: %w[flight])
+
+    assert_equal [ hit.id ], search(InboxEmail, "urgent flight").records.map(&:id)
+  end
+
   test "a keystroke search runs one SELECT and makes no network call" do
     inbox_email!(subject: "Invoice", labels: { needs_action: 0.9, urgent: 0.4 })
     cache_encoding!(InboxEmail, "urgent invoice", filters: { needs_action: 0.6 }, boosts: { urgent: 2.0 },

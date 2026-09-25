@@ -44,7 +44,7 @@ class QueryEncodingEncoderTest < Truffler::TestCase
     end
     assert_equal %w[billing travel other none], questions["option__category"]["criteria"].keys
     assert_equal %w[keyword label_term filler], questions["token__1"]["criteria"].keys
-    assert_equal({ "query" => "urgent billing emails", "tokens" => %w[urgent billing emails] }, request.state)
+    assert_equal({ "query" => "urgent billing emails", "tokens" => %w[urgent billing emails] }, request.state.except("labels"))
     assert_includes questions["token__1"]["instructions"], "tokens[1]"
   end
 
@@ -182,6 +182,48 @@ class QueryEncodingEncoderTest < Truffler::TestCase
     writer.join
     assert_equal({ "needs_action" => 0.6 }, encoding.filters)
     assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 1
+  end
+
+  test "0.1.1: 'needs action now' encoded as a needs_action filter with every word a keyword still finds the records" do
+    @fake.answer("intent__needs_action", "filter")
+    pay = inbox_email!(subject: "Pay the plumber", labels: { needs_action: 0.9 })
+    sign = inbox_email!(subject: "Sign the lease", labels: { needs_action: 0.8 })
+    inbox_email!(subject: "Newsletter", labels: { needs_action: 0.1 })
+
+    encoding = Encoder.new.encode(prefetch(InboxEmail, "needs action now"))
+
+    assert_equal({ "needs_action" => 0.6 }, encoding.filters)
+    assert_equal %w[needs action], encoding.label_term_tokens
+    assert_empty encoding.keyword_tokens
+    assert_equal [ pay.id, sign.id ].sort, search(InboxEmail, "needs action now").records.map(&:id).sort
+  end
+
+  test "0.1.1: the request state carries the label vocabulary, with choice option names" do
+    request = Encoder.new.request(InboxEmail, Query.new("billing"), tenant_key: "1")
+
+    labels = request.state["labels"]
+    assert_equal %w[needs_action urgent category importance], labels.keys
+    assert_equal "Does this email need the reader to act or reply?", labels["needs_action"]["description"]
+    assert_equal %w[billing travel other], labels["category"]["options"]
+    assert_nil labels["urgent"]["options"]
+    assert_includes request.questions["token__0"]["instructions"], "`labels`"
+  end
+
+  test "0.1.1: reconciliation turns keywords naming an applied label or option into label terms, stopwords into filler" do
+    @fake.answer("intent__category", "boost").answer("option__category", "billing").answer("intent__urgent", "filter")
+    key = prefetch(InboxEmail, "Urgent BILLINGS for the plumber please")
+
+    encoding = Encoder.new.encode(key)
+
+    assert_equal %w[urgent billings], encoding.label_term_tokens
+    assert_equal %w[plumber], encoding.keyword_tokens
+  end
+
+  test "0.1.1: keywords naming a label the query does not apply stay keywords" do
+    encoding = Encoder.new.encode(prefetch(InboxEmail, "urgent travel"))
+
+    assert encoding.empty?
+    assert_equal %w[urgent travel], encoding.keyword_tokens
   end
 
   test "covers AE6: a 3 s encoding misses a 1 s deadline, is cached anyway, and the next keystroke uses it" do
