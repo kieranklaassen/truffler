@@ -15,10 +15,12 @@ module Truffler
   #                               -> stores the section state and pings the host
   #                                  (`section: provider`); called once per transition
   #   candidate_ids               -> the local candidate snapshot, used for the weak
-  #                                  check when `start` gets no `local_result:`
+  #                                  check when `start` gets neither `local_result:`
+  #                                  nor a run that answers `local_weak?`
   #
-  # and may respond to `cancelled?`, `tenant_key`, and `user_key`, which the
-  # job honors when present.
+  # and may respond to `local_weak?` (the keystroke's own weak verdict, which
+  # the weak check prefers over `candidate_ids`), `cancelled?`, `tenant_key`,
+  # and `user_key`, which the job honors when present.
   module Providers
     SECTION = :provider
     STATUSES = %i[pending results empty unavailable].freeze
