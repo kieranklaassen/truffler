@@ -7,7 +7,7 @@ module Truffler
     attr_accessor :model, :cost_per_million_tokens, :requests_per_minute, :headroom, :priority_ceilings,
       :user_caps, :tenant_live_cap, :max_wait, :batch_size, :grouping_window, :max_attempts,
       :max_field_chars, :request_token_budget, :max_questions_per_request, :queue_name,
-      :embedder, :encryptor
+      :embedder, :encryptor, :backfill_spend_cap, :resume_pending_after
     attr_writer :client, :cache_store, :logger
 
     def initialize(env: ENV)
@@ -26,6 +26,8 @@ module Truffler
       @request_token_budget = 48_000
       @max_questions_per_request = 200
       @queue_name = :default
+      @backfill_spend_cap = nil
+      @resume_pending_after = 5.minutes
     end
 
     def client
