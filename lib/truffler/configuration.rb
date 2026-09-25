@@ -13,6 +13,7 @@ module Truffler
     attr_writer :secret_key_base
     attr_accessor :vector_store, :embedding_cost_per_million_tokens
     attr_accessor :encoding_prefetch
+    attr_reader :lenses
 
     def initialize(env: ENV)
       @model = "jev-latest"
@@ -36,6 +37,7 @@ module Truffler
       @resume_pending_after = 5.minutes
       @vector_store = :auto
       @embedding_cost_per_million_tokens = 0.02
+      @lenses = Lenses::Settings.new
     end
 
     def client

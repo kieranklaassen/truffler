@@ -64,5 +64,46 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
     add_index :truffler_query_misses, [:record_type, :tenant_key, :created_at],
       name: "index_truffler_query_misses_on_tenant"
     add_index :truffler_query_misses, :created_at
+
+    create_table :truffler_lenses do |t|
+      t.string :record_type, null: false
+      t.string :scope_type, null: false, default: "app"
+      t.string :scope_key
+      t.string :tenant_key
+      t.string :creator_digest
+      t.string :name
+      t.text :description
+      t.text :questions
+      t.text :reused_keys
+      t.string :fingerprint
+      t.string :status, null: false, default: "draft"
+      t.string :origin, null: false, default: "user"
+      t.string :proposal_digest
+      t.bigint :active_version_id
+      t.float :spend_cap_usd
+      t.float :spent_usd, null: false, default: 0.0
+      t.integer :usage_count, null: false, default: 0
+      t.datetime :last_used_at
+      t.timestamps
+    end
+    add_index :truffler_lenses, [:record_type, :status, :scope_type, :tenant_key],
+      name: "index_truffler_lenses_for_visibility"
+
+    create_table :truffler_lens_versions do |t|
+      t.bigint :lens_id, null: false
+      t.integer :number, null: false
+      t.text :description
+      t.text :questions, null: false
+      t.text :reused_keys
+      t.string :fingerprint, null: false
+      t.string :created_by_digest
+      t.string :status, null: false, default: "draft"
+      t.integer :restored_from
+      t.string :activated_by_digest
+      t.datetime :activated_at
+      t.datetime :created_at, null: false
+    end
+    add_index :truffler_lens_versions, [:lens_id, :number], unique: true,
+      name: "index_truffler_lens_versions_on_lens_and_number"
   end
 end

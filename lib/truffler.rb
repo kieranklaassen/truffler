@@ -14,6 +14,8 @@ loader.ignore("#{__dir__}/truffler/errors.rb", "#{__dir__}/truffler/railtie.rb")
 loader.do_not_eager_load("#{__dir__}/truffler/clients/ruby_llm_typesafe.rb")
 loader.inflector.inflect("ruby_llm_embedder" => "RubyLLMEmbedder")
 loader.do_not_eager_load("#{__dir__}/truffler/embeddings/ruby_llm_embedder.rb")
+loader.inflector.inflect("ruby_llm_generator" => "RubyLLMGenerator")
+loader.do_not_eager_load("#{__dir__}/truffler/lenses/ruby_llm_generator.rb")
 loader.setup
 
 module Truffler
