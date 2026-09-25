@@ -29,6 +29,13 @@ module Truffler
         @question["criteria"].to_h.transform_keys(&:to_s)
       end
 
+      def option_names(tenant_key = nil)
+        options(tenant_key).compact
+      end
+
+      # The lens question, wording included, is already in its fingerprint.
+      def encoding_wording(_tenant_key = nil) = nil
+
       def storage_keys(tenant_key = nil)
         type == :choice ? options(tenant_key).keys.map { |option| "#{key}:#{option}" } : [ key ]
       end

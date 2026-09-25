@@ -1,8 +1,9 @@
 module Truffler
   module Search
     # Where keystroke search finds query encodings and query vectors (R12,
-    # R15). Keys digest the model, the normalized query, and the vocabulary
-    # version, plus the tenant when the vocabulary has per-tenant choices.
+    # R15). Keys digest the model, the normalized query, and the vocabulary's
+    # encoding version (labeling fingerprints plus descriptions and option
+    # search texts), plus the tenant when the vocabulary has per-tenant choices.
     # Values hold decisions and floats, never query text. Encoding keys use
     # the searcher's vocabulary version, which holds the lenses that searcher
     # can see (KTD21), so a personal lens's encoding is never shared; query
@@ -60,7 +61,7 @@ module Truffler
       def digest(model, query, tenant_key, user_key)
         definition = model.truffler_definition
         tenant = tenant_key&.to_s if definition.per_tenant_vocabulary?
-        version = definition.vocabulary.version(tenant_key: tenant_key&.to_s, user_key: user_key)
+        version = definition.vocabulary.encoding_version(tenant_key: tenant_key&.to_s, user_key: user_key)
         Canonical.digest(record_type: model.polymorphic_name, query: query.normalized, vocabulary_version: version, tenant_key: tenant)
       end
     end

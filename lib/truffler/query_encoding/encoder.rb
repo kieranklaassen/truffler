@@ -191,9 +191,8 @@ module Truffler
         labels.transform_values do |label|
           entry = { "description" => label.description }
           if label.type == :choice
-            options = label.options(tenant_key)
-            entry["options"] = options.keys
-            names = options.compact
+            entry["options"] = label.options(tenant_key).keys
+            names = label.option_names(tenant_key)
             entry["option_names"] = names if names.any?
           end
           entry
@@ -228,8 +227,9 @@ module Truffler
           .reject(&:empty?).map(&:singularize)
       end
 
-      # An option's display name adds its words minus stopwords: "p_17" shown
-      # as "Spiral writing tool" names "spiral", "writing", and "tool". These
+      # An option's display name (its search text, else its description) adds
+      # its words minus stopwords: "p_17" shown as "Spiral writing tool" names
+      # "spiral", "writing", and "tool". These
       # match exactly only: descriptions are prose, and a stem match on them
       # would swallow ordinary search words ("chat" against "charge").
       def name_terms(option_name)
@@ -239,7 +239,7 @@ module Truffler
       def option_name(label, storage_key, tenant_key)
         return unless label.type == :choice
 
-        label.options(tenant_key)[Search::Encoding.split_key(storage_key).last]
+        label.option_names(tenant_key)[Search::Encoding.split_key(storage_key).last]
       end
 
       # "angry" names "anger": the same word ignoring plurals, or, against a

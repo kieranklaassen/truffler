@@ -3,7 +3,9 @@ module Truffler
   # normalized position, and choices one row per option ("label:option") with
   # that option's probability. Choice options may be a callable of the tenant
   # key, which makes the vocabulary per-tenant; a tenant it gives no options
-  # (`{}` or nil) simply does not have the label.
+  # (`{}` or nil) simply does not have the label. An option's value is its
+  # description, or `{ description:, search: }` to give query encoding a
+  # short search text apart from the classifier description.
   #
   # A label with `from:` is supplied by the host: its answer is read from the
   # record in the shape Jev answers normalize to and Jev is never asked. Its
@@ -13,6 +15,7 @@ module Truffler
   class LabelDefinition
     TYPES = %i[noul choice score].freeze
     KEY = /\A[a-z][a-z0-9_]*\z/
+    OPTION_FIELDS = %i[description search].freeze
 
     attr_reader :key, :type, :instructions, :filter_at, :boost, :watch, :version
     # Intent weight a filter decision adds to the KTD20 query vector (default 0).
@@ -49,13 +52,23 @@ module Truffler
       @options.respond_to?(:call)
     end
 
+    # {option => description}: the classifier wording Jev labels with. An
+    # option given as `{ description:, search: }` contributes its description.
     def options(tenant_key = nil)
-      options = per_tenant? ? @options.call(tenant_key) : @options
-      options = Array(options).to_h { |option| [ option, nil ] } unless options.is_a?(Hash)
-      options = options.to_h { |option, description| [ option.to_s, description ] }
-      raise DefinitionError, "#{key}: the option name #{NO_OPTION} is reserved" if options.key?(NO_OPTION)
+      option_entries(tenant_key).transform_values { |entry| entry[:description] }
+    end
 
-      options
+    # {option => name} for query words: the option's short search text, else
+    # its description; options with neither are left out.
+    def option_names(tenant_key = nil)
+      option_entries(tenant_key).transform_values { |entry| entry[:search].presence || entry[:description] }.compact
+    end
+
+    # What query encoding reads beyond the labeling fingerprint: descriptions
+    # and search texts. Digested into the encoding cache key only, so
+    # rewording never stales stored labels.
+    def encoding_wording(tenant_key = nil)
+      { description: description, options: (option_entries(tenant_key) if type == :choice) }
     end
 
     # False for a per-tenant choice with no options for this tenant.
@@ -75,11 +88,11 @@ module Truffler
     end
 
     # Stored supplied values change with their shape and version, never with
-    # the Jev model. The description and option wording are digested too
-    # because query encoding asks about them.
+    # the Jev model or the wording: descriptions and search texts reach only
+    # query encoding (see encoding_wording).
     def supplied_fingerprint(tenant_key = nil)
-      Canonical.digest(supplied: true, type: type, options: (options(tenant_key) if type == :choice),
-        levels: (levels if type == :score), description: description, version: version)
+      Canonical.digest(supplied: true, type: type, options: (options(tenant_key).keys if type == :choice),
+        levels: (levels if type == :score), version: version)
     end
 
     # {storage_key => value} read from the record, or nil when the host has
@@ -105,6 +118,25 @@ module Truffler
     end
 
     private
+
+    def option_entries(tenant_key)
+      options = per_tenant? ? @options.call(tenant_key) : @options
+      options = Array(options).to_h { |option| [ option, nil ] } unless options.is_a?(Hash)
+      options = options.to_h { |option, value| [ option.to_s, option_entry(option, value) ] }
+      raise DefinitionError, "#{key}: the option name #{NO_OPTION} is reserved" if options.key?(NO_OPTION)
+
+      options
+    end
+
+    def option_entry(option, value)
+      return { description: value, search: nil } unless value.is_a?(Hash)
+
+      entry = value.to_h.symbolize_keys
+      unknown = entry.keys - OPTION_FIELDS
+      raise DefinitionError, "#{key}: option #{option} takes description: and search:, not #{unknown.join(', ')}" if unknown.any?
+
+      { description: entry[:description], search: entry[:search] }
+    end
 
     def levels
       Array(@legend).size
