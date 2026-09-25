@@ -1,0 +1,23 @@
+Truffler.configure do |config|
+  # Pin the Jev model so tuned thresholds don't drift when jev-latest moves.
+  # Changing the pin marks every label stale and triggers relabeling.
+  config.model = "jev-latest"
+
+  # The default client is ruby_llm-typesafe (add `gem "ruby_llm-typesafe"`).
+  # Wrap your own client instead with:
+  #   config.client = Truffler::Clients::Callable.new(MyTypeSafeClient.new)
+
+  # One account-wide request budget; the remaining headroom is left for the
+  # app's other Jev calls. TYPESAFE_REQUESTS_PER_MINUTE overrides the limit.
+  # config.headroom = 0.25
+  # config.tenant_live_cap = 120
+
+  # config.batch_size = 10
+  # config.grouping_window = 0
+  # config.queue_name = :default
+
+  # Embeddings, for models that declare `embeddings`. :auto uses pgvector or
+  # sqlite-vec when available and exact cosine in Ruby otherwise.
+  # config.vector_store = :auto
+  # config.embedder = Truffler::Embeddings::RubyLLMEmbedder.new
+end
