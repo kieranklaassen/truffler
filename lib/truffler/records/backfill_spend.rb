@@ -24,12 +24,24 @@ module Truffler
       end
 
       # Before `rails g truffler:upgrade` adds tenant_key, every tenant
-      # shares the app-wide row.
-      def self.ledger(model, version, tenant_key: nil)
+      # shares the app-wide row. Before 0.1.6 rows were keyed by the whole
+      # vocabulary version; pass it as `legacy_version:` and the first lookup
+      # takes that row over instead of starting from zero.
+      def self.ledger(model, version, tenant_key: nil, legacy_version: nil)
         attributes = { record_type: model.polymorphic_name, vocabulary_version: version }
         attributes[:tenant_key] = tenant_key if tenant_ledgers?
+        adopt(attributes, legacy_version) if legacy_version && legacy_version != version
         create_or_find_by!(attributes)
       end
+
+      def self.adopt(attributes, legacy_version)
+        return if exists?(attributes)
+
+        where(attributes.merge(vocabulary_version: legacy_version)).update_all(vocabulary_version: attributes[:vocabulary_version])
+      rescue ActiveRecord::RecordNotUnique
+        nil
+      end
+      private_class_method :adopt
 
       # A worker booted before `db:migrate` added tenant_key has the old
       # columns cached, so a miss reloads them at most once per

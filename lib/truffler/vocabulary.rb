@@ -39,6 +39,16 @@ module Truffler
       Canonical.digest(fingerprints(tenant_key: tenant_key, user_key: user_key, all_users: all_users))
     end
 
+    # The version backfill spend ledgers are keyed by: the fingerprints of the
+    # labels Jev is asked only. Supplied labels cost nothing, so changing one
+    # (an option added to a `from:` choice included) never starts a new
+    # ledger. Without supplied labels it equals `version`, so ledger rows
+    # written before 0.1.6 keep their key.
+    def ledger_version(tenant_key: nil, user_key: nil, all_users: false)
+      asked = labels_for(tenant_key: tenant_key, user_key: user_key, all_users: all_users).reject { |_, label| label.supplied? }
+      Canonical.digest(asked.transform_values { |label| fingerprint_of(label, tenant_key) })
+    end
+
     # The version query encodings are cached under: the labeling version plus
     # a digest of the wording only query encoding reads (label descriptions,
     # option descriptions and search texts), which labeling never sees for

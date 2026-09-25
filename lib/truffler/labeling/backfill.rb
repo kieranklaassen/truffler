@@ -14,7 +14,8 @@ module Truffler
     # Jev about them again. A spend cap stops the run before a request would
     # exceed it; host-supplied labels cost nothing, so they are still written
     # once the cap is reached. The cap counts everything spent under the
-    # current vocabulary version in the truffler_backfill_spends ledger, so
+    # current ledger version (the asked labels' fingerprints, so supplied
+    # labels never reset it) in the truffler_backfill_spends ledger, so
     # reruns and overlapping jobs share it. Tenant-scoped models keep one
     # ledger per tenant (backfill_spend_cap_scope :tenant, the default), so
     # the cap applies to each tenant: a whole-model run skips a tenant at its
@@ -105,13 +106,16 @@ module Truffler
         new(model, tenant_key: tenant_key).status
       end
 
-      # The ledger row for the current vocabulary version (the tenant's, for
-      # a tenant ledger), or nil when nothing was spent yet or the ledger
-      # table is missing.
+      # The ledger row for the current ledger version (the tenant's, for a
+      # tenant ledger), or nil when nothing was spent yet or the ledger table
+      # is missing. A row still keyed by the pre-0.1.6 vocabulary version
+      # counts until a backfill takes it over.
       def self.spend(model, tenant_key: nil)
         return unless Records::BackfillSpend.available?
 
-        Records::BackfillSpend.for_ledger(model, tenant_key).find_by(vocabulary_version: ledger_version(model, tenant_key))
+        ledgers = Records::BackfillSpend.for_ledger(model, tenant_key)
+        ledgers.find_by(vocabulary_version: ledger_version(model, tenant_key)) ||
+          ledgers.find_by(vocabulary_version: legacy_ledger_version(model, tenant_key))
       end
 
       # Zeroes the current vocabulary version's ledger in place, so a chain
@@ -123,12 +127,20 @@ module Truffler
         ledgers = if all_tenants && Records::BackfillSpend.tenant_ledgers?
           Records::BackfillSpend.for_model(model).where.not(tenant_key: nil)
         else
-          Records::BackfillSpend.for_ledger(model, tenant_key).where(vocabulary_version: ledger_version(model, tenant_key))
+          Records::BackfillSpend.for_ledger(model, tenant_key)
+            .where(vocabulary_version: [ ledger_version(model, tenant_key), legacy_ledger_version(model, tenant_key) ])
         end
         ledgers.update_all(spent_usd: 0.0, requests: 0, updated_at: Time.current)
       end
 
+      # Spend ledgers key on the asked labels only (Vocabulary#ledger_version),
+      # so a supplied-label change never resets the cap.
       def self.ledger_version(model, tenant_key = nil)
+        model.truffler_definition.vocabulary.ledger_version(tenant_key: tenant_key, all_users: true)
+      end
+
+      # What ledgers were keyed by before 0.1.6: the whole vocabulary version.
+      def self.legacy_ledger_version(model, tenant_key = nil)
         model.truffler_definition.vocabulary.version(tenant_key: tenant_key, all_users: true)
       end
 
@@ -233,7 +245,10 @@ module Truffler
       def meter(tenant_key)
         ledger_tenant = ledger_available? ? definition.ledger_tenant(tenant_key) : nil
         @meters[ledger_tenant] ||= begin
-          ledger = Records::BackfillSpend.ledger(model, version_for(ledger_tenant), tenant_key: ledger_tenant) if ledger_available?
+          if ledger_available?
+            ledger = Records::BackfillSpend.ledger(model, self.class.ledger_version(model, ledger_tenant), tenant_key: ledger_tenant,
+              legacy_version: version_for(ledger_tenant))
+          end
           SpendMeter.new(@client, cap: @spend_cap, spent: ledger ? 0.0 : @spent, ledger: ledger)
         end
       end
