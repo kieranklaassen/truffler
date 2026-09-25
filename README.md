@@ -80,7 +80,8 @@ end
 Here is what each option does:
 
 - `filter_at` makes a label a hard filter at that probability when the query asks for it. `boost` is the label's weight when the query prefers it. `filter_weight:` (default 0) is how much intent weight a filter adds on top.
-- Choice `options:` may be a callable of the tenant key, which gives each tenant its own vocabulary.
+- Choice `options:` may be a callable of the tenant key, which gives each tenant its own vocabulary. A tenant it gives no options (`{}` or nil) simply lacks the label: it is neither asked nor encoded there. The option name `truffler:none` is reserved (see `Truffler::NO_OPTION` below).
+- `watch :column, ...` relabels every label when one of those columns changes. Saving a record only relabels on columns that changed, so a `reads` field backed by a method (a conversation built from messages, say) needs the columns it is built from in `watch`.
 - `keyword` also accepts a single callable, `->(scope, tokens) { relation }`.
 - `embeddings column: :my_vector` searches a vector column you maintain yourself. Truffler never writes it.
 - `embeddings` refuses to send encrypted fields to the embedding provider unless you pass `allow_encrypted: true`.
@@ -96,12 +97,12 @@ Here is what each option does:
 | `filter_at:`, `boost:`, `filter_weight:` | all | Filter threshold, boost weight, and the intent weight a filter adds. |
 | `description:` | all | The label's wording in query encoding. Defaults to the question, then to the key. |
 | `from:` | all | `->(record) { answer }`. Makes the label host-supplied; Jev is never asked. See [Labels you already compute](#labels-you-already-compute). |
-| `watch:` | with `from:` | Extra columns whose change refreshes the label, in addition to `reads`. |
+| `watch:` | all | Extra columns whose change refreshes (or, for an asked label, re-asks) just this label, in addition to `reads`. |
 | `version:` | with `from:` | Any value; changing it rewrites the label for every record on the next backfill. |
 
 Keys must be lowercase snake case without a double underscore, and `lens` is reserved.
 
-Saving a record enqueues labeling (and embedding, when enabled) after commit, but only when a field in `reads`, the tenant column, or a supplied label's `watch:` column changed. Destroying a record removes its labels, state, and embeddings.
+Saving a record enqueues labeling (and embedding, when enabled) after commit, but only when a column-backed field in `reads`, the tenant column, a model-level `watch` column, or a label's `watch:` column changed. Destroying a record removes its labels, state, and embeddings.
 
 ### Labels you already compute
 
@@ -171,10 +172,14 @@ result = Email.truffler(params[:q], tenant: Current.account.id, scope: Current.a
 
 A keystroke search makes no network call. It reads the query encoding and query vector from the cache. When the cache misses, it enqueues `EncodeQueryJob`, and the next keystroke or reload picks up the result.
 
+Query encoding sends Jev the label vocabulary (each label's description and a choice label's option names) next to the query, and asks for each label whether the query filters on it, prefers it, or ignores it, plus the role of each word. A choice label's option question also offers `Truffler::NO_OPTION` (`"truffler:none"`), meaning the query names none of its options, so a host option literally called `none` stays filterable. Word roles are then checked locally: a word that names a label the query applies (its key, a word of its key, or the chosen option, ignoring case and plurals, or a word of four letters or more sharing its first three letters, so "angry" names `anger`) counts as naming the label, and common stopwords are dropped. When the encoding applies a label filter, the filter decides which records match and keyword hits only rank them; without one, the remaining keywords must match.
+
+Time phrases are handled in Ruby and never asked of Jev: `today`, `yesterday`, `this week`, `last week`, `this month`, `last month`, `past|last N days|weeks`, and `since monday` through `since sunday`. The first one in a query limits results to records whose `arrived_at` column falls in that window, its words are not keywords, and it shows as a chip `{key: "time", label: "time", kind: :time, name: "This week"}`. Pass `"time"` in `suppressed:` to drop it. Weeks start on `Date.beginning_of_week`, and the window is computed from `Time.current` (or a `clock:` callable passed to the search, for tests).
+
 The returned `Truffler::Search::Result` exposes:
 
 - `records` and `ids`.
-- `chips`: `[{key:, label:, kind: :filter | :boost, name:}]`.
+- `chips`: `[{key:, label:, kind: :filter | :boost | :time, name:}]`.
 - `invite_row`: `{query:, reason: :weak | :empty | :encoding_pending}` or nil.
 - `encoding_status`: `:cached`, `:pending`, or `:none`.
 - `watermark` and `new_matches_count`.
@@ -322,7 +327,7 @@ Set these in `Truffler.configure do |config| ... end`.
 | `max_field_chars`, `request_token_budget`, `max_questions_per_request` | 4,000, 48,000, 200 | Request packing limits. |
 | `queue_name` | `:default` | Queue for every Truffler job. |
 | `cost_per_million_tokens` | 0.042 | Jev input price, used in usage events and estimates. |
-| `backfill_spend_cap` | nil | Dollar cap per backfill run. Supplied labels cost nothing and are still written once it is reached. |
+| `backfill_spend_cap` | 5.0 | Dollar cap per backfill run (`BackfillJob` chains, `ResumeJob` backfills, and `truffler:backfill`). `nil` disables it; for the rake task, `SPEND_CAP=none` does. Supplied labels cost nothing and are still written once it is reached. |
 | `resume_pending_after` | 5 minutes | How long before `ResumeJob` treats work as stuck. |
 | `embedder` | `Embeddings::RubyLLMEmbedder.new` | Any `Embeddings::Embedder` subclass. The default calls `RubyLLM.embed`, which works on ruby_llm 1.x and 2. |
 | `embedding_cost_per_million_tokens` | 0.02 | Embedding price. |
@@ -348,7 +353,7 @@ Truffler enqueues most of its own jobs. Run a worker for `config.queue_name` and
 | `Truffler::Jobs::ResumeJob` | Every few minutes. Requeues failed and stuck labeling after an outage or a crashed worker, and enqueues up to 1,000 missing or stale embeddings per model per hour. |
 | `Truffler::Jobs::PruneQueryMissesJob` | Daily. Enforces `miss_retention`. |
 | `Truffler::Jobs::ExpireLensesJob` | Daily. Expires lenses unused for `lenses.expire_after`. |
-| `bin/rails "truffler:backfill[Email]"` (`SPEND_CAP=5`) or `Truffler::Jobs::BackfillJob.perform_later("Email")` | After adopting Truffler, changing a declaration, or changing the model pin. |
+| `bin/rails "truffler:backfill[Email]"` (`SPEND_CAP=20`, or `none`; default `backfill_spend_cap`) or `Truffler::Jobs::BackfillJob.perform_later("Email")` | After adopting Truffler, changing a declaration, or changing the model pin. |
 | `Truffler::Embeddings::Backfill.new(Email).enqueue` | After enabling embeddings or changing the embedding model, width, or fields, to re-embed everything now instead of through the `ResumeJob` sweep. It enqueues 1,000 jobs at a time; pass `limit:` to cap the total. |
 
 `bin/rails "truffler:status[Email]"` prints labeling counts. `bin/rails "truffler:suggestions[Email]"` prints candidate questions drawn from logged query misses.
@@ -423,3 +428,5 @@ bundle exec rubocop
 ```
 
 Tests run on in-memory SQLite with fake clients. Any live Jev call raises `Truffler::LiveCallInTest`.
+
+In your own tests, `Truffler::Clients::Fake` answers unscripted questions neutrally: nouls no, scores the lowest level, and choices their neutral option when they have one (`ignore` for a query's label intent, `Truffler::NO_OPTION` for an option question, `keyword` for a word role), otherwise the first option. An unscripted query encoding therefore applies no labels; script the ones a test needs, e.g. `fake.answer("intent__needs_action", "filter")`.

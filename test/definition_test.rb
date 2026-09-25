@@ -60,6 +60,42 @@ class DefinitionTest < Truffler::TestCase
     assert_includes error.message, "missing_column"
   end
 
+  test "0.1.1: declaring on a missing table defers column checks until the first labeling" do
+    connection = ActiveRecord::Base.connection
+    model = self.class.const_set(:LateNote, define_model("DefinitionTest::LateNote", table: "late_notes"))
+    model.truffler do
+      tenant :account_id
+      reads :title
+      label :pinned, :noul, from: ->(note) { note.pinned }
+    end
+
+    connection.create_table(:late_notes) do |t|
+      t.integer :account_id
+      t.string :title
+      t.boolean :pinned
+    end
+    note = model.create!(account_id: 1, title: "Hi", pinned: true)
+    drain_jobs
+
+    assert_equal [ [ "pinned", 1.0 ] ], Truffler::Records::Label.where(record_id: note.id).pluck(:label_key, :value)
+  ensure
+    connection.drop_table(:late_notes, if_exists: true)
+    self.class.send(:remove_const, :LateNote) if self.class.const_defined?(:LateNote, false)
+  end
+
+  test "0.1.1: unknown columns on a table created after declaration raise at first use" do
+    connection = ActiveRecord::Base.connection
+    model = define_model("LateBadNote", table: "late_bad_notes")
+    model.truffler { reads :nope }
+
+    connection.create_table(:late_bad_notes) { |t| t.string :title }
+
+    error = assert_raises(Truffler::DefinitionError) { model.truffler("x", scope: model.all) }
+    assert_match(/unknown attributes nope/, error.message)
+  ensure
+    connection.drop_table(:late_bad_notes, if_exists: true)
+  end
+
   test "an unknown tenant column raises DefinitionError" do
     assert_raises(Truffler::DefinitionError) do
       define_model("BadTenant") { truffler { tenant :team_id; reads :subject } }
@@ -175,5 +211,33 @@ class DefinitionTest < Truffler::TestCase
     assert model.truffler_definition.per_tenant_vocabulary?
     assert_not Email.truffler_definition.per_tenant_vocabulary?
     assert_equal [ "folder:work", "folder:home" ], model.truffler_definition.label(:folder).storage_keys("1")
+  end
+
+  test "0.1.1: a per-tenant choice with no options for a tenant is neither asked nor encoded there" do
+    Truffler.config.client = fake = Truffler::Clients::Fake.new
+    model = self.class.const_set(:SparseFolders, define_model("DefinitionTest::SparseFolders") do
+      truffler do
+        tenant :account_id
+        reads :subject
+        label :folder, :choice, question: "Which folder?", options: ->(tenant) { { "1" => %w[work home], "2" => {} }[tenant] }
+        label :urgent, :noul, question: "Urgent?"
+      end
+    end)
+    folder = model.truffler_definition.label(:folder)
+
+    assert_equal({}, folder.options("2"))
+    assert_equal({}, folder.options("3"))
+    record = model.create!(account_id: 2, subject: "Hi")
+    drain_jobs
+
+    assert_equal %w[r001__urgent], fake.calls.sole[:questions].keys
+    assert_equal %w[urgent], Truffler::Records::Label.where(record_id: record.id).pluck(:label_key)
+    request = Truffler::QueryEncoding::Encoder.new.request(model, Truffler::Search::Query.new("work"), tenant_key: "2")
+    assert_equal %w[intent__urgent token__0], request.questions.keys
+    assert_equal %w[urgent], request.state["labels"].keys
+    assert_includes Truffler::QueryEncoding::Encoder.new.request(model, Truffler::Search::Query.new("work"), tenant_key: "1")
+      .questions.keys, "option__folder"
+  ensure
+    self.class.send(:remove_const, :SparseFolders) if self.class.const_defined?(:SparseFolders, false)
   end
 end

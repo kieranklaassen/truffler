@@ -2,12 +2,19 @@ module Truffler
   module QueryEncoding
     # Encodes one pending query (KTD9). It asks a fixed question set: each
     # label gets `filter | boost | ignore`, each choice label also gets its
-    # options plus `none`, and each of the first 12 word tokens gets
+    # options plus `Truffler::NO_OPTION`, and each of the first 12 word tokens gets
     # `keyword | label_term | filler`. Exact-text tokens (digits, dates,
     # quoted phrases, emails, identifiers) are keywords decided locally and
     # never asked (R18). Query text travels only in `state` ("query" and
     # "tokens"); a token question names its word by position, `tokens[n]`,
-    # so searcher text never lands in an instruction (R8).
+    # so searcher text never lands in an instruction (R8). The label
+    # vocabulary rides along in `state["labels"]` so a token question can
+    # tell a word that names a label from text to match.
+    #
+    # Jev's word roles are then reconciled locally: a keyword that names a
+    # label the query applies (its key, a word of its key, or the chosen
+    # option, ignoring case and plurals, or sharing its first three letters) becomes a label term, and a common
+    # stopword becomes filler.
     #
     # Answers become a `Search::Encoding` with the KTD20 intent vector: boost
     # gives the declared boost, filter narrows and adds `filter_weight`
@@ -22,10 +29,14 @@ module Truffler
       }.freeze
       TOKEN_ROLES = {
         "keyword" => "A word to match in the record text",
-        "label_term" => "A word that names one of the labels above rather than text to match",
+        "label_term" => "A word that names one of the labels in `labels`, or one of its options, rather than text to match",
         "filler" => "A word that carries no meaning for the search"
       }.freeze
-      NO_OPTION = "none".freeze
+      NO_OPTION = Truffler::NO_OPTION
+      STOPWORDS = %w[
+        a about all an and any are at be by for from have i in is it me my now of on or our please so some that the their
+        them there they this to up us was we what when where which who why with you your
+      ].to_set.freeze
 
       Request = Data.define(:state, :questions, :token_ids, :exact_tokens, :unasked_tokens)
 
@@ -54,16 +65,20 @@ module Truffler
             criteria: options)
         end
 
-        words = query.tokens.each_with_index.reject { |token, _| query.exact_tokens.include?(token) }
+        words = query.tokens.each_with_index.reject do |token, position|
+          query.exact_tokens.include?(token) || query.time_position?(position)
+        end
         asked = words.first(MAX_TOKEN_QUESTIONS)
         token_ids = asked.to_h do |_token, position|
           id = :"token__#{position}"
-          questions.choice(id, instructions: %(In the search query, what is the word tokens[#{position}]?), criteria: TOKEN_ROLES)
+          questions.choice(id, instructions: %(In the search query, what is the word tokens[#{position}]? The labels it may name, ) +
+            %(with their options, are in `labels`.), criteria: TOKEN_ROLES)
           [ position, id.to_s ]
         end
 
-        Request.new(state: { "query" => query.normalized, "tokens" => query.tokens }, questions: questions.to_h, token_ids: token_ids,
-          exact_tokens: query.exact_tokens, unasked_tokens: words.drop(MAX_TOKEN_QUESTIONS).map(&:first))
+        state = { "query" => query.normalized, "tokens" => query.tokens, "labels" => vocabulary_state(labels, tenant_key) }
+        Request.new(state: state, questions: questions.to_h, token_ids: token_ids, exact_tokens: query.exact_tokens,
+          unasked_tokens: words.drop(MAX_TOKEN_QUESTIONS).map(&:first))
       end
 
       # Encodes the query pending under `cache_key`. Returns the encoding, or
@@ -103,6 +118,7 @@ module Truffler
         filters = {}
         boosts = {}
         intent = {}
+        terms = []
         labels(model, tenant_key, user_key).each_value do |label|
           key = storage_key(label, answers, tenant_key)
           next unless key
@@ -113,15 +129,15 @@ module Truffler
             intent[key] = label.filter_weight
           when "boost"
             boosts[key] = intent[key] = label.boost || DEFAULT_BOOST
+          else next
           end
+          terms.concat(label_terms(key))
         end
 
-        roles = request.token_ids.transform_values { |id| answers.choice(id) }
         query = Search::Query.new(request.state["query"])
-        keyword_tokens = query.tokens.each_with_index.filter_map do |token, position|
-          token if roles.fetch(position, "keyword") == "keyword"
-        end
-        label_term_tokens = roles.filter_map { |position, role| query.tokens[position] if role == "label_term" }
+        roles = reconcile(query, request.token_ids.transform_values { |id| answers.choice(id) }, terms.uniq)
+        keyword_tokens = query.tokens.each_index.filter_map { |position| query.tokens[position] if roles[position] == "keyword" }
+        label_term_tokens = query.tokens.each_index.filter_map { |position| query.tokens[position] if roles[position] == "label_term" }
         Search::Encoding.new(filters: filters, boosts: boosts, intent_vector: intent, keyword_tokens: keyword_tokens,
           label_term_tokens: label_term_tokens)
       end
@@ -162,12 +178,55 @@ module Truffler
       end
 
       # The label's storage key the query names, or nil for a choice label
-      # whose option answer is `none`.
+      # whose option answer is NO_OPTION.
       def storage_key(label, answers, tenant_key)
         return label.key unless label.type == :choice
 
         option = answers.choice("option__#{label.question_key}")
         "#{label.key}:#{option}" if option != NO_OPTION && label.options(tenant_key).key?(option)
+      end
+
+      def vocabulary_state(labels, tenant_key)
+        labels.transform_values do |label|
+          entry = { "description" => label.description }
+          entry["options"] = label.options(tenant_key).keys if label.type == :choice
+          entry
+        end
+      end
+
+      # {position => role} for every token. Time phrase words are "time";
+      # exact tokens and unasked words are keywords; a keyword naming an
+      # applied label becomes a label term; stopwords become filler unless
+      # they are all that would be left of an encoding that applies nothing.
+      def reconcile(query, answered, terms)
+        roles = query.tokens.each_index.to_h do |position|
+          [ position, query.time_position?(position) ? "time" : answered.fetch(position, "keyword") ]
+        end
+        words = roles.keys.select { |position| roles[position] == "keyword" && !query.exact_tokens.include?(query.tokens[position]) }
+        words.each { |position| roles[position] = "label_term" if names_label?(query.tokens[position], terms) }
+        stopwords = words.select { |position| roles[position] == "keyword" && STOPWORDS.include?(query.tokens[position]) }
+        return roles if terms.empty? && roles.values.count("keyword") == stopwords.size
+
+        stopwords.each { |position| roles[position] = "filler" }
+        roles
+      end
+
+      # "category:billing" names "category" and "billing"; "needs_action"
+      # names "needs_action", "needs", and "action".
+      STEM = 3
+
+      def label_terms(storage_key)
+        label, option = Search::Encoding.split_key(storage_key)
+        [ label.split(":").last, option ].compact.flat_map { |name| [ name.downcase, *name.downcase.split(/[^\p{Alnum}]+/) ] }
+          .reject(&:empty?).map(&:singularize)
+      end
+
+      # "angry" names "anger": the same word ignoring plurals, or two words of
+      # four letters or more that share their first three letters. Only the
+      # applied labels' terms are compared, so the loose match stays safe.
+      def names_label?(word, terms)
+        word = word.singularize
+        terms.any? { |term| term == word || (word.length > STEM && term.length > STEM && word[0, STEM] == term[0, STEM]) }
       end
 
       def intent_instructions(label)

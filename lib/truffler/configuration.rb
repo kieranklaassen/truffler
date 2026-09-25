@@ -3,6 +3,7 @@ module Truffler
     DEFAULT_REQUESTS_PER_MINUTE = 1_200
     DEFAULT_PRIORITY_CEILINGS = { live: 1.0, encode: 0.9, rerank: 0.75, backfill: 0.5 }.freeze
     DEFAULT_USER_CAPS = { encode: 30, rerank: 10 }.freeze
+    DEFAULT_BACKFILL_SPEND_CAP = 5.0
 
     attr_accessor :model, :cost_per_million_tokens, :requests_per_minute, :headroom, :priority_ceilings,
       :user_caps, :tenant_live_cap, :max_wait, :batch_size, :grouping_window, :max_attempts,
@@ -35,7 +36,7 @@ module Truffler
       @queue_name = :default
       @miss_retention = 30.days
       @miss_min_distinct_users = 5
-      @backfill_spend_cap = nil
+      @backfill_spend_cap = DEFAULT_BACKFILL_SPEND_CAP
       @resume_pending_after = 5.minutes
       @vector_store = :auto
       @embedding_cost_per_million_tokens = 0.02

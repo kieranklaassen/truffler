@@ -9,8 +9,14 @@ module Truffler
     #   fake.answer(:urgency, 2)                        # score level
     #   fake.answer(:spam) { |tag, state| state.dig("records", tag, "body").include?("$$$") ? 0.9 : 0.1 }
     #
-    # Unscripted questions answer no, the first option, or the lowest level.
+    # Unscripted questions answer no, the lowest level, or for a choice its
+    # neutral option when it has one (`ignore` for a query-encoding intent,
+    # `Truffler::NO_OPTION` for an option question, `keyword` for a word
+    # role), else the first option. So an unscripted query encoding applies
+    # no label.
     class Fake < Base
+      NEUTRAL_OPTIONS = [ "ignore", NO_OPTION, "keyword" ].freeze
+
       attr_reader :calls
 
       def initialize(model: nil, &default)
@@ -67,7 +73,7 @@ module Truffler
         probabilities = options.to_h { |option| [ option, 0.0 ] }
         case value
         when Hash then probabilities.merge!(value.transform_keys(&:to_s).transform_values(&:to_f))
-        when nil then probabilities[options.first] = 1.0
+        when nil then probabilities[(NEUTRAL_OPTIONS & options).first || options.first] = 1.0
         else probabilities[value.to_s] = 1.0
         end
         pick, confidence = probabilities.max_by { |_, probability| probability }

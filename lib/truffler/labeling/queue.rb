@@ -10,6 +10,7 @@ module Truffler
 
       def initialize(model, config: Truffler.config)
         @model = model
+        model.truffler_definition.validate_columns!
         @config = config
       end
 

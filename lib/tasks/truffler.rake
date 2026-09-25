@@ -9,10 +9,18 @@ namespace :truffler do
     model
   end
 
-  desc "Backfill stale, missing, and failed labels for a model (SPEND_CAP=dollars)"
+  resolve_spend_cap = lambda do |value|
+    case value.to_s.strip.downcase
+    when "" then Truffler.config.backfill_spend_cap
+    when "none" then nil
+    else Float(value, exception: false) || abort("SPEND_CAP must be a dollar amount or none, got #{value.inspect}")
+    end
+  end
+
+  desc "Backfill stale, missing, and failed labels for a model (SPEND_CAP=dollars or none; default config.backfill_spend_cap)"
   task :backfill, [ :model ] => :setup do |_, args|
     model = resolve_model.call(args[:model])
-    spend_cap = ENV["SPEND_CAP"].presence&.to_f || Truffler.config.backfill_spend_cap
+    spend_cap = resolve_spend_cap.call(ENV.fetch("SPEND_CAP", nil))
     result = Truffler::Labeling::Backfill.new(model, spend_cap: spend_cap).run
     puts "#{model.name}: #{result.status}, #{result.labeled} labeled in #{result.requests} requests, $#{format('%.6f', result.cost)}"
   end

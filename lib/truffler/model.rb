@@ -62,8 +62,9 @@ module Truffler
     # outside the watched columns, e.g. from the job that classified it.
     def truffler_refresh_labels!
       definition = self.class.truffler_definition
-      keys = definition.supplied_labels.map(&:key)
-      Labeling::Supplied.new(self.class).write([ [ self, keys ] ], tenant_key: definition.tenant_key_for(self)) if keys.any?
+      tenant_key = definition.tenant_key_for(self)
+      keys = definition.supplied_labels.select { |label| label.available?(tenant_key) }.map(&:key)
+      Labeling::Supplied.new(self.class).write([ [ self, keys ] ], tenant_key: tenant_key) if keys.any?
       self
     end
 
@@ -77,10 +78,10 @@ module Truffler
       end
 
       changed = saved_changes.keys
-      if changed.intersect?([ *definition.fields, definition.tenant_column ].compact)
+      if changed.intersect?(definition.relabel_columns)
         truffler_expire_labels
       else
-        watched = definition.supplied_labels.select { |label| changed.intersect?(label.watch) }
+        watched = definition.labels.values.select { |label| changed.intersect?(label.watch) }
         return if watched.empty?
 
         truffler_expire_labels(watched.map(&:key))
@@ -103,7 +104,7 @@ module Truffler
     def truffler_enqueue_embedding
       definition = self.class.truffler_definition
       return unless Embeddings.managed?(definition)
-      return unless previously_new_record? || saved_changes.keys.intersect?([ *definition.fields, definition.tenant_column ].compact)
+      return unless previously_new_record? || saved_changes.keys.intersect?(definition.relabel_columns)
 
       Jobs::EmbedJob.perform_later(self.class.polymorphic_name, id)
     end

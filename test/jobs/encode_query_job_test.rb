@@ -5,7 +5,7 @@ class EncodeQueryJobTest < Truffler::TestCase
 
   setup do
     Truffler.config.secret_key_base = "test-secret-key-base"
-    @fake = Truffler::Clients::Fake.new { |tag| { "intent" => "ignore", "option" => "none", "token" => "filler" }[tag] }
+    @fake = Truffler::Clients::Fake.new { |tag| { "intent" => "ignore", "option" => Truffler::NO_OPTION, "token" => "filler" }[tag] }
       .answer("intent__needs_action", "filter").answer("token__2", "label_term").answer("token__4", "label_term")
     Truffler.config.client = @fake
   end

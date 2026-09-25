@@ -13,6 +13,18 @@ class WeightedEmail < ActiveRecord::Base
   end
 end
 
+class ProductEmail < ActiveRecord::Base
+  self.table_name = "emails"
+  include Truffler::Model
+
+  truffler do
+    tenant :account_id
+    reads :subject
+    label :product, :choice, question: "Which product is this about?", options: { "cora" => "Cora", "none" => "Not about any product" },
+      filter_at: 0.5
+  end
+end
+
 class QueryEncodingEncoderTest < Truffler::TestCase
   include Truffler::Test::SearchHelpers
 
@@ -21,7 +33,7 @@ class QueryEncodingEncoderTest < Truffler::TestCase
 
   setup do
     Truffler.config.secret_key_base = "test-secret-key-base"
-    @fake = Truffler::Clients::Fake.new { |tag| { "intent" => "ignore", "option" => "none", "token" => "keyword" }[tag] }
+    @fake = Truffler::Clients::Fake.new { |tag| { "intent" => "ignore", "option" => Truffler::NO_OPTION, "token" => "keyword" }[tag] }
     Truffler.config.client = @fake
     @cache = Truffler::Search::EncodingCache.new
   end
@@ -42,9 +54,9 @@ class QueryEncodingEncoderTest < Truffler::TestCase
     %w[needs_action urgent category importance].each do |key|
       assert_equal %w[filter boost ignore], questions["intent__#{key}"]["criteria"].keys
     end
-    assert_equal %w[billing travel other none], questions["option__category"]["criteria"].keys
+    assert_equal [ "billing", "travel", "other", Truffler::NO_OPTION ], questions["option__category"]["criteria"].keys
     assert_equal %w[keyword label_term filler], questions["token__1"]["criteria"].keys
-    assert_equal({ "query" => "urgent billing emails", "tokens" => %w[urgent billing emails] }, request.state)
+    assert_equal({ "query" => "urgent billing emails", "tokens" => %w[urgent billing emails] }, request.state.except("labels"))
     assert_includes questions["token__1"]["instructions"], "tokens[1]"
   end
 
@@ -112,7 +124,7 @@ class QueryEncodingEncoderTest < Truffler::TestCase
   end
 
   test "a choice label with no option named, or ignored, contributes nothing" do
-    @fake.answer("intent__category", "filter").answer("option__category", "none")
+    @fake.answer("intent__category", "filter").answer("option__category", Truffler::NO_OPTION)
 
     assert_empty Encoder.new.encode(prefetch(InboxEmail, "some category")).filters
   end
@@ -184,6 +196,69 @@ class QueryEncodingEncoderTest < Truffler::TestCase
     assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 1
   end
 
+  test "0.1.1: 'needs action now' encoded as a needs_action filter with every word a keyword still finds the records" do
+    @fake.answer("intent__needs_action", "filter")
+    pay = inbox_email!(subject: "Pay the plumber", labels: { needs_action: 0.9 })
+    sign = inbox_email!(subject: "Sign the lease", labels: { needs_action: 0.8 })
+    inbox_email!(subject: "Newsletter", labels: { needs_action: 0.1 })
+
+    encoding = Encoder.new.encode(prefetch(InboxEmail, "needs action now"))
+
+    assert_equal({ "needs_action" => 0.6 }, encoding.filters)
+    assert_equal %w[needs action], encoding.label_term_tokens
+    assert_empty encoding.keyword_tokens
+    assert_equal [ pay.id, sign.id ].sort, search(InboxEmail, "needs action now").records.map(&:id).sort
+  end
+
+  test "0.1.1: the request state carries the label vocabulary, with choice option names" do
+    request = Encoder.new.request(InboxEmail, Query.new("billing"), tenant_key: "1")
+
+    labels = request.state["labels"]
+    assert_equal %w[needs_action urgent category importance], labels.keys
+    assert_equal "Does this email need the reader to act or reply?", labels["needs_action"]["description"]
+    assert_equal %w[billing travel other], labels["category"]["options"]
+    assert_nil labels["urgent"]["options"]
+    assert_includes request.questions["token__0"]["instructions"], "`labels`"
+  end
+
+  test "0.1.1: reconciliation turns keywords naming an applied label or option into label terms, stopwords into filler" do
+    @fake.answer("intent__category", "boost").answer("option__category", "billing").answer("intent__urgent", "filter")
+    key = prefetch(InboxEmail, "Urgent BILLINGS for the plumber please")
+
+    encoding = Encoder.new.encode(key)
+
+    assert_equal %w[urgent billings], encoding.label_term_tokens
+    assert_equal %w[plumber], encoding.keyword_tokens
+  end
+
+  test "0.1.1: keywords naming a label the query does not apply stay keywords" do
+    encoding = Encoder.new.encode(prefetch(InboxEmail, "urgent travel"))
+
+    assert encoding.empty?
+    assert_equal %w[urgent travel], encoding.keyword_tokens
+  end
+
+  test "0.1.1: a host option named none can be filtered, and the reserved no-option answer applies nothing" do
+    questions = Encoder.new.request(ProductEmail, Query.new("x"), tenant_key: "1").questions
+    assert_equal [ "cora", "none", Truffler::NO_OPTION ], questions["option__product"]["criteria"].keys
+    assert_equal "Not about any product", questions["option__product"]["criteria"]["none"]
+
+    @fake.answer("intent__product", "filter").answer("option__product", "none")
+    assert_equal({ "product:none" => 0.5 }, Encoder.new.encode(prefetch(ProductEmail, "no product")).filters)
+
+    @fake.answer("option__product", Truffler::NO_OPTION)
+    assert_empty Encoder.new.encode(prefetch(ProductEmail, "some product")).filters
+  end
+
+  test "0.1.1: a host option may not use the reserved no-option name" do
+    label = Truffler::LabelDefinition.new(:product, :choice, question: "Which?", options: ->(_) { [ "cora", Truffler::NO_OPTION ] })
+
+    assert_raises(Truffler::DefinitionError) { label.options("1") }
+    assert_raises(Truffler::DefinitionError) do
+      Truffler::LabelDefinition.new(:product, :choice, question: "Which?", options: [ "cora", Truffler::NO_OPTION ])
+    end
+  end
+
   test "covers AE6: a 3 s encoding misses a 1 s deadline, is cached anyway, and the next keystroke uses it" do
     now = 0.0
     clock = -> { now }
@@ -204,5 +279,14 @@ class QueryEncodingEncoderTest < Truffler::TestCase
     later = search(InboxEmail, "plumber")
     assert_equal :cached, later.encoding_status
     assert_equal [ pay.id ], later.records.map(&:id)
+  end
+
+  test "0.1.1: a word sharing a label's first letters names it ('urgently' names urgent), a short or unrelated word does not" do
+    @fake.answer("intent__urgent", "filter")
+
+    encoding = Encoder.new.encode(prefetch(InboxEmail, "urgently waiting on up"))
+
+    assert_equal %w[urgently], encoding.label_term_tokens
+    assert_includes encoding.keyword_tokens, "waiting"
   end
 end

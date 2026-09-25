@@ -14,6 +14,7 @@ module Truffler
 
       def initialize(model, client: Truffler.config.client, budget: Budget.new)
         @model = model
+        model.truffler_definition.validate_columns!
         @client = client
         @budget = budget
       end

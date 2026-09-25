@@ -100,6 +100,18 @@ class BackfillJobTest < Truffler::TestCase
     assert_equal [ { record_type: "Email", outcome: :spend_cap_reached, labeled_count: 0, request_count: 0, cost: 0.0 } ], payloads
   end
 
+  test "0.1.1: BackfillJob is capped by default, and a nil backfill_spend_cap disables the cap" do
+    create_emails(2)
+    Truffler.config.cost_per_million_tokens = 100_000_000.0
+
+    capped = capture_notifications("truffler.backfill") { BackfillJob.perform_now("Email") }
+    Truffler.config.backfill_spend_cap = nil
+    uncapped = capture_notifications("truffler.backfill") { BackfillJob.perform_now("Email") }
+
+    assert_equal [ :spend_cap_reached ], capped.map { |payload| payload[:outcome] }
+    assert_equal [ :complete ], uncapped.map { |payload| payload[:outcome] }
+  end
+
   test "continues in a follow-up job after max_pages" do
     create_emails(6)
     Truffler.config.batch_size = 1

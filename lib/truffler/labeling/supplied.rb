@@ -12,6 +12,7 @@ module Truffler
 
       def initialize(model)
         @model = model
+        model.truffler_definition.validate_columns!
         @failed_ids = Set.new
       end
 

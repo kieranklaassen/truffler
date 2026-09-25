@@ -237,7 +237,7 @@ class SmartSearchRunTest < Truffler::TestCase
     label!(Email.create!(account_id: 1, subject: "Weekly digest", received_at: 2.hours.ago), needs_action: 0.1)
     query = "emails I need to act on right now"
     clear_enqueued_jobs
-    Truffler.config.client = client = Truffler::Clients::Fake.new { |tag| { "intent" => "ignore", "option" => "none", "token" => "filler" }[tag] }
+    Truffler.config.client = client = Truffler::Clients::Fake.new { |tag| { "intent" => "ignore", "option" => Truffler::NO_OPTION, "token" => "filler" }[tag] }
     client.answer("intent__needs_action", "filter").answer(:relevance, 0.9)
 
     keystroke = search(Email, query)

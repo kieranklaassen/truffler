@@ -2,12 +2,14 @@ module Truffler
   # One typed label question. Nouls store their probability, scores their
   # normalized position, and choices one row per option ("label:option") with
   # that option's probability. Choice options may be a callable of the tenant
-  # key, which makes the vocabulary per-tenant.
+  # key, which makes the vocabulary per-tenant; a tenant it gives no options
+  # (`{}` or nil) simply does not have the label.
   #
   # A label with `from:` is supplied by the host: its answer is read from the
   # record in the shape Jev answers normalize to and Jev is never asked. Its
-  # question is optional, `watch:` names extra columns that refresh it, and
-  # `version:` forces a refresh when its logic changes.
+  # question is optional and `version:` forces a refresh when its logic
+  # changes. On any label, `watch:` names extra columns whose change
+  # refreshes (or re-asks) just that label.
   class LabelDefinition
     TYPES = %i[noul choice score].freeze
     KEY = /\A[a-z][a-z0-9_]*\z/
@@ -50,9 +52,15 @@ module Truffler
     def options(tenant_key = nil)
       options = per_tenant? ? @options.call(tenant_key) : @options
       options = Array(options).to_h { |option| [ option, nil ] } unless options.is_a?(Hash)
-      raise DefinitionError, "#{key}: choice options for tenant #{tenant_key.inspect} are empty" if options.empty?
+      options = options.to_h { |option, description| [ option.to_s, description ] }
+      raise DefinitionError, "#{key}: the option name #{NO_OPTION} is reserved" if options.key?(NO_OPTION)
 
-      options.to_h { |option, description| [ option.to_s, description ] }
+      options
+    end
+
+    # False for a per-tenant choice with no options for this tenant.
+    def available?(tenant_key = nil)
+      type != :choice || !per_tenant? || options(tenant_key).any?
     end
 
     def question(tenant_key = nil)
@@ -139,7 +147,7 @@ module Truffler
     def validate_supplied!
       unless supplied?
         raise DefinitionError, "#{key}: a question is required" if instructions.blank?
-        raise DefinitionError, "#{key}: watch: and version: need from:" if @watch.any? || !@version.nil?
+        raise DefinitionError, "#{key}: version: needs from:" unless @version.nil?
 
         return
       end
