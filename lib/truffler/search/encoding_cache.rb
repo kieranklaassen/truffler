@@ -62,7 +62,18 @@ module Truffler
         definition = model.truffler_definition
         tenant = tenant_key&.to_s if definition.per_tenant_vocabulary?
         version = definition.vocabulary.encoding_version(tenant_key: tenant_key&.to_s, user_key: user_key)
-        Canonical.digest(record_type: model.polymorphic_name, query: query.normalized, vocabulary_version: version, tenant_key: tenant)
+        parts = { record_type: model.polymorphic_name, query: query.normalized, vocabulary_version: version, tenant_key: tenant }
+        present = present_options(model, tenant_key, user_key)
+        Canonical.digest(present ? parts.merge(present_options: Canonical.digest(present.to_a.sort)) : parts)
+      end
+
+      # With skip_empty_options, the tenant's present choice options (see
+      # QueryEncoding::PresentOptions), so an encoding refreshes when one appears.
+      def present_options(model, tenant_key, user_key)
+        return unless QueryEncoding::PresentOptions.enabled?
+
+        labels = model.truffler_definition.vocabulary.labels_for(tenant_key: tenant_key&.to_s, user_key: user_key)
+        QueryEncoding::PresentOptions.new.keys(model, labels, tenant_key: tenant_key&.to_s)
       end
     end
   end

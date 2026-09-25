@@ -25,6 +25,8 @@ module Truffler
     attr_accessor :backfill_spend_cap_scope
     # Choice options below this probability store no row and read as 0.0 (nil stores every option).
     attr_accessor :choice_min_probability
+    # Query encoding omits choice options the tenant has no label row for (QueryEncoding::PresentOptions).
+    attr_accessor :skip_empty_options
 
     def initialize(env: ENV)
       @model = "jev-latest"
@@ -62,6 +64,7 @@ module Truffler
       @tenant_enabled = nil
       @backfill_spend_cap_scope = :tenant
       @choice_min_probability = 0.05
+      @skip_empty_options = false
     end
 
     def client
