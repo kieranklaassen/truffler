@@ -143,6 +143,55 @@ class LabelingTasksTest < Truffler::TestCase
     assert_match(/MAX_DURATION/, error)
   end
 
+  def request_cost
+    records = Email.order(:id).first(2).map { |email| [ email, Email.truffler_definition.label_keys ] }
+    request = Truffler::Labeling::RequestBuilder.new(Email.truffler_definition, tenant_key: "1").build(records).sole
+    Truffler.config.cost_for(Truffler::Tokens.estimate({ state: request.state, questions: request.questions }))
+  end
+
+  def fresh_emails(count)
+    emails = create_emails(count)
+    State.where(record_id: emails.map(&:id)).delete_all
+    clear_enqueued_jobs
+    emails
+  end
+
+  test "0.1.2: rerunning backfill stops at the cap spent by the earlier run; RESET_SPEND=1 starts a fresh ledger" do
+    fresh_emails(2)
+    cap = format("%.12f", request_cost * 1.5)
+
+    first, = with_env("SPEND_CAP" => cap) { capture_io { @rake["truffler:backfill"].invoke("Email") } }
+    fresh_emails(2)
+    @rake["truffler:backfill"].reenable
+    capped, = with_env("SPEND_CAP" => cap) { capture_io { @rake["truffler:backfill"].invoke("Email") } }
+    @rake["truffler:backfill"].reenable
+    reset, = with_env("SPEND_CAP" => cap, "RESET_SPEND" => "1") { capture_io { @rake["truffler:backfill"].invoke("Email") } }
+
+    assert_match(/complete, 2 labeled in 1 requests/, first)
+    assert_match(/spend_cap_reached, 0 labeled in 0 requests/, capped)
+    assert_match(/fresh spend ledger/, reset)
+    assert_match(/complete, 2 labeled in 1 requests/, reset)
+    assert_equal 2, @fake.calls.size
+  end
+
+  test "0.1.2: status prints the spend recorded for the current vocabulary version" do
+    fresh_emails(2)
+    capture_io { @rake["truffler:backfill"].invoke("Email") }
+
+    output, = capture_io { @rake["truffler:status"].invoke("Email") }
+
+    version = Email.truffler_definition.vocabulary.version(all_users: true)
+    assert_match(/spent\s+\$\d+\.\d{6} in 1 requests \(vocabulary #{version.first(12)}, cap \$5\.00\)/, output)
+  end
+
+  test "0.1.2: status without the ledger table says spend is per run and how to upgrade" do
+    output, = Truffler::Test::Schema.without_table("truffler_backfill_spends") do
+      capture_io { @rake["truffler:status"].invoke("Email") }
+    end
+
+    assert_match(/spent\s+not tracked across runs; run bin\/rails g truffler:upgrade/, output)
+  end
+
   test "0.1.1: a SPEND_CAP that is neither dollars nor none aborts" do
     _, error = with_spend_cap_env("lots") do
       capture_io { assert_raises(SystemExit) { @rake["truffler:backfill"].invoke("Email") } }

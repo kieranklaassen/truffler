@@ -19,6 +19,16 @@ module Truffler
         namespace.module_eval(context.render(File.read(TEMPLATE)), TEMPLATE)
         namespace.const_get(:CreateTrufflerTables).migrate(:up)
       end
+
+      # Hides a gem table for the block, like a host that upgraded the gem
+      # without running its new migration.
+      def self.without_table(name)
+        connection = ActiveRecord::Base.connection
+        connection.rename_table(name, "#{name}_hidden")
+        yield
+      ensure
+        connection.rename_table("#{name}_hidden", name)
+      end
     end
   end
 end

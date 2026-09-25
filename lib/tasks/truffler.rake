@@ -28,11 +28,15 @@ namespace :truffler do
   describe_cursor = ->(cursor) { cursor.nil? ? "none" : cursor }
 
   desc "Backfill stale, missing, and failed labels for a model, waiting out budget denials " \
-    "(SPEND_CAP=dollars or none; default config.backfill_spend_cap; MAX_DURATION=seconds)"
+    "(SPEND_CAP=dollars or none; default config.backfill_spend_cap; MAX_DURATION=seconds; RESET_SPEND=1 for a fresh spend ledger)"
   task :backfill, [ :model ] => :setup do |_, args|
     model = resolve_model.call(args[:model])
     spend_cap = resolve_spend_cap.call(ENV.fetch("SPEND_CAP", nil))
     max_duration = resolve_max_duration.call(ENV.fetch("MAX_DURATION", nil))
+    if ENV.fetch("RESET_SPEND", nil) == "1"
+      Truffler::Labeling::Backfill.reset_spend!(model)
+      puts "#{model.name}: fresh spend ledger for the current vocabulary version"
+    end
     progress = lambda do |so_far, delay|
       puts "#{model.name}: waiting #{format('%.1f', delay)}s for backfill budget (#{so_far.labeled} labeled, " \
         "$#{format('%.6f', so_far.cost)} spent, cursor #{describe_cursor.call(so_far.cursor)})"
@@ -48,5 +52,13 @@ namespace :truffler do
     model = resolve_model.call(args[:model])
     puts model.name
     Truffler::Labeling::Backfill.status(model).each { |key, count| puts format("  %-9s %d", key, count) }
+    if Truffler::Records::BackfillSpend.available?
+      ledger = Truffler::Labeling::Backfill.spend(model)
+      cap = Truffler.config.backfill_spend_cap
+      puts format("  %-9s $%.6f in %d requests (vocabulary %s, cap %s)", "spent", ledger&.spent_usd.to_f, ledger&.requests.to_i,
+        Truffler::Labeling::Backfill.ledger_version(model).first(12), cap ? format("$%.2f", cap) : "none")
+    else
+      puts format("  %-9s %s", "spent", "not tracked across runs; run bin/rails g truffler:upgrade && bin/rails db:migrate")
+    end
   end
 end

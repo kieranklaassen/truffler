@@ -193,6 +193,36 @@ class BackfillJobTest < Truffler::TestCase
     assert_equal 6, State.where(status: "labeled").count
   end
 
+  test "0.1.2: a new BackfillJob chain starts from the spend its vocabulary version already made" do
+    create_emails(2)
+    Truffler.config.batch_size = 2
+    client = MeteredFlakyClient.new(fail_on: [])
+    Truffler.config.client = client
+    price = Truffler.config.cost_per_million_tokens
+
+    BackfillJob.perform_now("Email", spend_cap: 1.5 * price)
+    create_emails(4)
+    BackfillJob.perform_now("Email", spend_cap: 1.5 * price)
+    drain_jobs
+
+    assert_equal 2, client.paid, "the second chain sees the first chain's spend and stops at the cap"
+    assert_in_delta 2 * price, Truffler::Labeling::Backfill.spend(Email).spent_usd, 1e-12
+  end
+
+  test "0.1.2: carried spend is not counted twice when the ledger already holds it" do
+    create_emails(6)
+    Truffler.config.batch_size = 1
+    client = MeteredFlakyClient.new(fail_on: [])
+    Truffler.config.client = client
+    price = Truffler.config.cost_per_million_tokens
+
+    BackfillJob.perform_now("Email", spend_cap: 5.5 * price, max_pages: 1)
+    drain_jobs
+
+    assert_equal 6, client.paid
+    assert_equal 6, State.where(status: "labeled").count
+  end
+
   test "gives up after the last retry and leaves rows pending for the resume sweep" do
     create_emails(1)
     @fake.fail_with(Truffler::Test::HttpError.new(503, "Service Unavailable"))
