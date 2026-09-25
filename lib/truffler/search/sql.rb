@@ -24,9 +24,10 @@ module Truffler
         @store = store
       end
 
-      # The caller's relation, ANDed with the tenant and the hard filters.
+      # The caller's relation, ANDed with the tenant, the time range, and the hard filters.
       def base(scope)
         scope = scope.where(definition.tenant_column => tenant_key) if definition.scoped?
+        scope = within_time(scope, encoding.time) if encoding.time
         encoding.filters.reduce(scope) { |relation, (key, threshold)| relation.where(Arel.sql(label_filter_sql(key, threshold))) }
       end
 
@@ -103,6 +104,12 @@ module Truffler
       def label_scope_sql
         tenant = definition.scoped? ? " AND #{label_column('tenant_key')} = #{quote(tenant_key)}" : ""
         "#{label_column('record_type')} = #{quote(model.polymorphic_name)}#{tenant} AND #{label_column('record_id')} = #{primary_key}"
+      end
+
+      def within_time(scope, range)
+        arrived_at = model.arel_table[definition.arrived_at_column]
+        scope = scope.where(arrived_at.gteq(range.from))
+        range.to ? scope.where(arrived_at.lt(range.to)) : scope
       end
 
       def label_filter_sql(key, threshold)

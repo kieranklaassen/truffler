@@ -10,7 +10,7 @@ module Truffler
       attr_reader :model, :query, :tenant_key, :scope, :user_key, :suppressed, :surface, :limit
 
       def initialize(model, query, tenant:, scope:, user: nil, suppressed: [], surface: nil, limit: DEFAULT_LIMIT, weights: {},
-        cache: EncodingCache.new)
+        cache: EncodingCache.new, clock: -> { Time.current })
         @model = model
         @definition = model.try(:truffler_definition) || raise(DefinitionError, "#{model.name} has no truffler declaration")
         @definition.validate_columns!
@@ -23,6 +23,7 @@ module Truffler
         @limit = limit
         @weights = @definition.ranking.merge(weights.to_h { |key, weight| [ key.to_sym, Float(weight) ] })
         @cache = cache
+        @clock = clock
         check_scope!
       end
 
@@ -40,7 +41,7 @@ module Truffler
         explicit_action = surface_action
         cached = read_encoding
         status = encoding_status(cached)
-        encoding = visible_lenses_only(cached&.without(suppressed), record_usage: true)
+        encoding = with_time(visible_lenses_only(cached&.without(suppressed), record_usage: true))
         sql = sql(encoding)
         records = sql.relation(scope, limit: limit).to_a
         result = Result.new(records: records, query: query, encoding: encoding, encoding_status: status, watermark: watermark,
@@ -53,7 +54,7 @@ module Truffler
       # How many records the same search would return that arrived after
       # `since` (R25). Reads the cache only and never prefetches.
       def count(since:)
-        sql(visible_lenses_only(read_encoding&.without(suppressed))).candidates(scope)
+        sql(with_time(visible_lenses_only(read_encoding&.without(suppressed)))).candidates(scope)
           .where(model.arel_table[@definition.arrived_at_column].gt(since)).count
       end
 
@@ -90,6 +91,15 @@ module Truffler
         hidden, shown = lens_keys.partition { |key| !visible.include?(lens_id(key)) }
         Lenses.record_usage(shown.map { |key| lens_id(key) }.uniq) if record_usage
         encoding.without(hidden)
+      end
+
+      # The query's time phrase, resolved on this search's clock, unless the
+      # searcher removed its chip.
+      def with_time(encoding)
+        phrase = query.time_phrase
+        return encoding if phrase.nil? || suppressed.include?(TimeRange.key)
+
+        (encoding || Encoding.new).with(time: phrase.range(@clock.call))
       end
 
       def lens_id(key)

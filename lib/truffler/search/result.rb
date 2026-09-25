@@ -29,12 +29,14 @@ module Truffler
         records.map(&:id)
       end
 
-      # Applied filters, then boosts, as `{key:, label:, kind:, name:}`.
+      # Applied filters, then boosts, then the time range, as `{key:, label:, kind:, name:}`.
       def chips
         return [] unless encoding
 
         filters = encoding.filters.keys.map { |key| chip(key, :filter) }
-        filters + (encoding.boosts.keys - encoding.filters.keys).map { |key| chip(key, :boost) }
+        chips = filters + (encoding.boosts.keys - encoding.filters.keys).map { |key| chip(key, :boost) }
+        time = encoding.time
+        time ? chips + [ { key: TimeRange.key, label: TimeRange.key, kind: :time, name: time.name } ] : chips
       end
 
       def score(record)

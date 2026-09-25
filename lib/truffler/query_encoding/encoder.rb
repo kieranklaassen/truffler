@@ -65,7 +65,9 @@ module Truffler
             criteria: options)
         end
 
-        words = query.tokens.each_with_index.reject { |token, _| query.exact_tokens.include?(token) }
+        words = query.tokens.each_with_index.reject do |token, position|
+          query.exact_tokens.include?(token) || query.time_position?(position)
+        end
         asked = words.first(MAX_TOKEN_QUESTIONS)
         token_ids = asked.to_h do |_token, position|
           id = :"token__#{position}"
@@ -192,12 +194,14 @@ module Truffler
         end
       end
 
-      # {position => role} for every token. Exact tokens and unasked words
-      # are keywords; a keyword naming an applied label becomes a label term;
-      # stopwords become filler unless they are all that would be left of an
-      # encoding that applies nothing.
+      # {position => role} for every token. Time phrase words are "time";
+      # exact tokens and unasked words are keywords; a keyword naming an
+      # applied label becomes a label term; stopwords become filler unless
+      # they are all that would be left of an encoding that applies nothing.
       def reconcile(query, answered, terms)
-        roles = query.tokens.each_index.to_h { |position| [ position, answered.fetch(position, "keyword") ] }
+        roles = query.tokens.each_index.to_h do |position|
+          [ position, query.time_position?(position) ? "time" : answered.fetch(position, "keyword") ]
+        end
         words = roles.keys.select { |position| roles[position] == "keyword" && !query.exact_tokens.include?(query.tokens[position]) }
         words.each { |position| roles[position] = "label_term" if names_label?(query.tokens[position], terms) }
         stopwords = words.select { |position| roles[position] == "keyword" && STOPWORDS.include?(query.tokens[position]) }

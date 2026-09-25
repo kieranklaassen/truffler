@@ -55,13 +55,13 @@ module Truffler
         pool = local_ids.first(depth)
         return pool if result.encoding_status == :cached || definition.labels.empty? || pool.size >= depth
 
-        pool + newest_in_scope(exclude: pool, limit: [ @config.smart_candidate_pool - pool.size, 0 ].max)
+        pool + newest_in_scope(exclude: pool, limit: [ @config.smart_candidate_pool - pool.size, 0 ].max, time: result.encoding&.time)
       end
 
-      def newest_in_scope(exclude:, limit:)
+      def newest_in_scope(exclude:, limit:, time:)
         return [] if limit.zero?
 
-        sql = Search::Sql.new(@model, tenant_key: keystroke.tenant_key, query: @query)
+        sql = Search::Sql.new(@model, tenant_key: keystroke.tenant_key, query: @query, encoding: Search::Encoding.new(time: time))
         relation = sql.base(keystroke.scope).where.not(@model.primary_key => exclude)
         column, direction = definition.order
         relation = column ? relation.reorder(column => direction) : relation.unscope(:order)
