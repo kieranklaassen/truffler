@@ -198,4 +198,13 @@ class SearchFillerTest < Truffler::TestCase
     assert_equal [ this_week.id, old.id ].sort,
       search(InboxEmail, "urgent messages this week", suppressed: %w[urgent time]).records.map(&:id).sort
   end
+
+  test "0.1.5: removing the time chip keeps a declared option word beside another keyword (Bugbot)" do
+    keep = Truffler::Search::Filler.label_words(CHANNEL_EMAIL.truffler_definition, "1")
+    encoding = encode_for(CHANNEL_EMAIL, "refund message today")
+
+    assert_includes encoding.without([ "time" ], keep_words: keep).keyword_tokens, "message"
+    result = CHANNEL_EMAIL.truffler("refund message today", tenant: 1, scope: CHANNEL_EMAIL.all, user: "user-1", suppressed: [ "time" ])
+    assert_includes result.encoding.keyword_tokens, "message"
+  end
 end

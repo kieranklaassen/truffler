@@ -298,4 +298,21 @@ class LensIntegrationTest < Truffler::TestCase
     assert_equal "lens:42:language", chip[:label]
     assert_equal "Language: dutch", chip[:name]
   end
+
+  test "0.1.5: an app lens backfill never claims or deletes a disabled tenant's state rows (Bugbot)" do
+    feed_message("Hallo", account: 1)
+    other = feed_message("Hallo", account: 2)
+    label_claimed(FeedMessage, "1")
+    label_claimed(FeedMessage, "2")
+    before = Truffler::Records::RecordState.where(tenant_key: "2").pluck(:id, :status, :vocabulary_version)
+    Truffler.config.tenant_enabled = ->(_model, tenant_key) { tenant_key != "2" }
+
+    lens = dutch_lens(scope: Scope.app)
+    answer_lens_language(lens)
+    Truffler::Lenses::Backfill.new(lens.reload).run
+
+    assert_equal before, Truffler::Records::RecordState.where(tenant_key: "2").pluck(:id, :status, :vocabulary_version)
+    assert_empty lens_rows(other, lens)
+    assert_not_empty Label.where("label_key LIKE ?", "lens:#{lens.id}:%").where.not(record_id: other.id)
+  end
 end

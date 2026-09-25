@@ -87,15 +87,19 @@ module Truffler
         tenants.first
       end
 
-      # Records deleted, in a disabled tenant, or outside index_scope /
-      # index_if lose their state rows instead of being labeled.
+      # Records deleted or outside index_scope / index_if lose their state
+      # rows instead of being labeled. A disabled tenant keeps its state rows:
+      # they go back to pending at backfill priority, so re-enabling it
+      # relabels only what is stale instead of every record.
       def load_records(states, tenant_key)
-        records = if definition.tenant_enabled?(tenant_key)
-          definition.index_relation(model.where(model.primary_key => states.map(&:record_id))).to_a
-            .select { |record| definition.index_if.nil? || definition.index_if.call(record) }
-        else
-          []
+        unless definition.tenant_enabled?(tenant_key)
+          Records::RecordState.where(id: states.map(&:id))
+            .update_all(status: "pending", priority: "backfill", claimed_at: nil, updated_at: Time.current)
+          return []
         end
+
+        records = definition.index_relation(model.where(model.primary_key => states.map(&:record_id))).to_a
+          .select { |record| definition.index_if.nil? || definition.index_if.call(record) }
         found = records.map { |record| record.id.to_s }
         gone = states.reject { |state| found.include?(state.record_id.to_s) }
         Records::RecordState.where(id: gone.map(&:id)).delete_all if gone.any?

@@ -55,8 +55,10 @@ module Truffler
 
       # The encoding minus the chips the searcher removed (R20), matched by
       # storage key or by label key; "time" removes the time range. A label
-      # term whose every source label is gone becomes a keyword again.
-      def without(suppressed)
+      # term whose every source label is gone becomes a keyword again. `keep_words`
+      # (a set, or a callable returning one) holds the words that are never
+      # filler, as in `keywords`.
+      def without(suppressed, keep_words: nil)
         suppressed = Array(suppressed).map(&:to_s).to_set
         return self if suppressed.empty?
 
@@ -66,7 +68,9 @@ module Truffler
         freed = label_term_sources.select { |_, keys| keys.any? && keys.none? { |key| applied.include?(key) } }.keys
         kept_time = (time unless suppressed.include?(TimeRange.key))
         keywords = keyword_tokens && (keyword_tokens + freed).uniq
-        keywords = Filler.keywords(keywords + filler_tokens, anchored: false) if keywords && applied.empty? && kept_time.nil?
+        if keywords && applied.empty? && kept_time.nil?
+          keywords = Filler.keywords(keywords + filler_tokens, anchored: false, keep: keep_words.respond_to?(:call) ? keep_words.call : keep_words)
+        end
         with(**kept, time: kept_time, label_term_tokens: label_term_tokens - freed,
           label_term_sources: label_term_sources.except(*freed), soft_keyword_tokens: soft_keyword_tokens - freed,
           keyword_tokens: keywords)

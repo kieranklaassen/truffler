@@ -279,4 +279,31 @@ class TenantScopingTest < Truffler::TestCase
   ensure
     previous.each { |key, value| ENV[key] = value }
   end
+
+  test "0.1.5: the labeler keeps a disabled tenant's state rows, back at pending backfill" do
+    create_email(account_id: 2)
+    disable_tenant("2")
+    states = Truffler::Labeling::Queue.new(Email).claim("2", priority: :live, limit: 10)
+
+    Truffler::Labeling::Labeler.new(Email).label(states, priority: :live)
+
+    assert_empty @fake.calls
+    assert_equal [ %w[pending backfill] ], State.where(tenant_key: "2").pluck(:status, :priority)
+  end
+
+  test "0.1.5: status counts only what the backfill may touch (Bugbot)" do
+    create_note(account_id: 1)
+    create_note(account_id: 1, archived: true)
+    create_note(account_id: 2)
+    hide_states
+    disable_tenant("2")
+
+    Backfill.new(TenantNote).run
+    status = Backfill.status(TenantNote)
+
+    assert_equal 1, status[:total]
+    assert_equal 0, status[:missing]
+    assert_equal 1, status[:current]
+    assert_equal 1, Backfill.status(TenantNote, tenant_key: "1")[:total]
+  end
 end

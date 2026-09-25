@@ -37,6 +37,8 @@ module Truffler
 
           attempted.concat(records.map(&:id))
           records.group_by { |record| definition.tenant_key_for(record) }.each do |tenant_key, slice|
+            next unless definition.tenant_enabled?(tenant_key)
+
             stop = label(slice, tenant_key)
             return result(stop) if stop
           end
@@ -71,7 +73,11 @@ module Truffler
       def page(attempted)
         pk = model.primary_key
         scope = definition.index_relation(model.all)
-        scope = scope.where(definition.tenant_column => lens.tenant_key) if definition.scoped? && lens.tenant_key
+        if definition.scoped? && lens.tenant_key
+          return [] unless definition.tenant_enabled?(lens.tenant_key)
+
+          scope = scope.where(definition.tenant_column => lens.tenant_key)
+        end
         scope = scope.where.not(pk => attempted) if attempted.any?
         scope.where(Arel.sql(stale_sql)).reorder(definition.arrival_order).limit(batch_size).to_a
       end

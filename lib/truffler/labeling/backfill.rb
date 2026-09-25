@@ -101,8 +101,8 @@ module Truffler
         end
       end
 
-      def self.status(model)
-        new(model).status
+      def self.status(model, tenant_key: nil)
+        new(model, tenant_key: tenant_key).status
       end
 
       # The ledger row for the current vocabulary version (the tenant's, for
@@ -184,11 +184,16 @@ module Truffler
         end
       end
 
+      # Counts over what the backfill may touch: index_scope, enabled tenants,
+      # and the one tenant when `tenant_key:` is given.
       def status
-        counts = states.group(:status).count
-        labeled = states.where(status: "labeled").group(:tenant_key, :vocabulary_version).count
+        scope, tenants = status_scope
+        tracked = states
+        tracked = tracked.where(tenant_key: tenants) if tenants
+        counts = tracked.group(:status).count
+        labeled = tracked.where(status: "labeled").group(:tenant_key, :vocabulary_version).count
         stale = labeled.sum { |(tenant_key, version), count| version == version_for(tenant_key) ? 0 : count }
-        { total: model.count, missing: model.joins(state_join).where("#{STATES}.id IS NULL").count,
+        { total: scope.count, missing: scope.joins(state_join).where("#{STATES}.id IS NULL").count,
           pending: counts["pending"].to_i, labeling: counts["labeling"].to_i, labeled: counts["labeled"].to_i,
           failed: counts["failed"].to_i, stale: stale, current: labeled.values.sum - stale }
       end
@@ -205,6 +210,18 @@ module Truffler
 
       def states
         Records::RecordState.for_model(model)
+      end
+
+      # [relation, tenant keys or nil]: the records status counts, and the
+      # tenants it covers when it narrows to some.
+      def status_scope
+        scope = definition.index_relation(model.all)
+        return [ scope, nil ] unless definition.scoped?
+        return [ scope.where(definition.tenant_column => @tenant_key), [ @tenant_key ] ] if @tenant_key
+        return [ scope, nil ] unless Truffler.config.tenant_enabled
+
+        tenants = scope.distinct.pluck(definition.tenant_column).map(&:to_s).select { |tenant_key| enabled?(tenant_key) }
+        [ scope.where(definition.tenant_column => tenants), tenants ]
       end
 
       def queue

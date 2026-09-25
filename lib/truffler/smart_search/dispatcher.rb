@@ -64,7 +64,7 @@ module Truffler
           if @encodings.encoded?(key) then @encodings.read_encoding(key, query)
           elsif @encodings.in_flight?(key) then @encoder.await(key, deadline: @deadline, query: query)
           end
-        encoding&.without(run.suppressed)
+        encoding&.without(run.suppressed, keep_words: -> { Search::Filler.label_words(model.truffler_definition, run.tenant_key) })
       end
 
       # The snapshot narrowed to what the encoding allows, in the tenant, in
