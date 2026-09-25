@@ -30,7 +30,7 @@ module Truffler
         local_ids = result.ids
         run = Run.create(@model, query: @query.raw.strip, tenant_key: keystroke.tenant_key, user_key: keystroke.user_key,
           surface: keystroke.surface, suppressed: @suppressed, pool_ids: pool(result, local_ids), local_ids: local_ids,
-          local_weak: local_ids.size < definition.weak_below, explicit_action: result.explicit_action, store: @store)
+          local_weak: result.invite_row.present?, explicit_action: result.explicit_action, store: @store)
         previous = @store.supersede(run.record_type, run.tenant_key, run.user_key, run.surface, run.id)
         Run.load(previous, store: @store).cancel! if previous
         Instrumentation.instrument(:smart_search, run_id: run.id, record_type: run.record_type, tenant_key: run.tenant_key,

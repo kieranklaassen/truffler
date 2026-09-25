@@ -92,6 +92,13 @@ class DefinitionTest < Truffler::TestCase
     end
   end
 
+  test "a label named lens is reserved for lens dimensions" do
+    error = assert_raises(Truffler::DefinitionError) do
+      define_model("LensLabel") { truffler { reads :subject; label :lens, :noul, question: "?" } }
+    end
+    assert_match(/reserved/, error.message)
+  end
+
   test "requires at least one field to read" do
     assert_raises(Truffler::DefinitionError) { define_model("NoReads") { truffler { label :spam, :noul, question: "?" } } }
   end

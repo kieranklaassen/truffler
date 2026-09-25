@@ -40,6 +40,7 @@ module Truffler
 
       def weak_local?
         return @local_result.invite_row.present? if @local_result
+        return @run.local_weak? if @run.respond_to?(:local_weak?)
         unless @run.respond_to?(:candidate_ids)
           raise ArgumentError, "Providers.start needs local_result: or a run that responds to candidate_ids"
         end

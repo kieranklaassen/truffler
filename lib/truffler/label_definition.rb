@@ -59,6 +59,7 @@ module Truffler
 
     def validate!
       raise DefinitionError, "label #{key.inspect} must match #{KEY.source} without a double underscore" unless valid_key?
+      raise DefinitionError, "label #{key.inspect} is reserved for lens dimensions" if key == Lenses::KEY_PREFIX
       raise DefinitionError, "#{key}: type must be one of #{TYPES.join(', ')}" unless TYPES.include?(type)
       raise DefinitionError, "#{key}: a question is required" if instructions.blank?
       raise DefinitionError, "#{key}: choice labels need options:" if type == :choice && @options.blank?
