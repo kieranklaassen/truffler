@@ -9,6 +9,8 @@ module Truffler
       :max_field_chars, :request_token_budget, :max_questions_per_request, :queue_name,
       :embedder, :encryptor
     attr_writer :client, :cache_store, :logger
+    attr_accessor :miss_retention, :miss_min_distinct_users
+    attr_writer :secret_key_base
 
     def initialize(env: ENV)
       @model = "jev-latest"
@@ -26,6 +28,8 @@ module Truffler
       @request_token_budget = 48_000
       @max_questions_per_request = 200
       @queue_name = :default
+      @miss_retention = 30.days
+      @miss_min_distinct_users = 5
     end
 
     def client
@@ -44,6 +48,11 @@ module Truffler
       tokens.to_i * cost_per_million_tokens / 1_000_000.0
     end
 
+    def secret_key_base
+      @secret_key_base.presence || rails_secret_key_base.presence ||
+        raise(Error, "Truffler needs config.secret_key_base (or a Rails secret_key_base) to digest query misses")
+    end
+
     private
 
     def rails_cache
@@ -52,6 +61,10 @@ module Truffler
 
     def rails_logger
       Rails.logger if defined?(Rails) && Rails.respond_to?(:logger)
+    end
+
+    def rails_secret_key_base
+      Rails.application&.secret_key_base if defined?(Rails) && Rails.respond_to?(:application)
     end
   end
 end
