@@ -92,6 +92,7 @@ Here is what each option does:
 
 - `filter_at` makes a label a hard filter at that probability when the query asks for it. `boost` is the label's weight when the query prefers it. `filter_weight:` (default 0) is how much intent weight a filter adds on top.
 - Choice `options:` may be a callable of the tenant key, which gives each tenant its own vocabulary. A tenant it gives no options (`{}` or nil) simply lacks the label: it is neither asked nor encoded there. The option name `truffler:none` is reserved (see `Truffler::NO_OPTION` below).
+- An option's value may be `{ description: "...", search: "..." }` instead of a plain description, e.g. `options: { "prod-a1" => { description: "Cora, the AI email assistant that drafts replies...", search: "Cora email assistant" } }`. Jev labels records with the description; query words are matched against the short search text (else the description), and the request state's `option_names` carries it. A per-tenant callable may return the same shape. Editing a search text never stales labels or triggers a backfill; it only changes the query-encoding cache key, so queries are re-encoded.
 - `watch :column, ...` relabels every label when one of those columns changes. Saving a record only relabels on columns that changed, so a `reads` field backed by a method (a conversation built from messages, say) needs the columns it is built from in `watch`.
 - `keyword` also accepts a single callable, `->(scope, tokens) { relation }`.
 - `embeddings column: :my_vector` searches a vector column you maintain yourself. Truffler never writes it.
@@ -103,7 +104,7 @@ Here is what each option does:
 |---|---|---|
 | `question:` | asked labels (required); optional with `from:` | What Jev is asked about each record. |
 | `criteria:` | `:noul` | `{ true => "...", false => "..." }` guidance for Jev. |
-| `options:` | `:choice` (required) | Option names, `{ option => description }`, or a callable of the tenant key. |
+| `options:` | `:choice` (required) | Option names, `{ option => description }`, `{ option => { description:, search: } }`, or a callable of the tenant key returning any of these. |
 | `legend:` | `:score` (required) | Two or more ordered levels, as an array or `{ index => description }`. |
 | `filter_at:`, `boost:`, `filter_weight:` | all | Filter threshold, boost weight, and the intent weight a filter adds. |
 | `description:` | all | The label's wording in query encoding. Defaults to the question, then to the key. |
@@ -158,7 +159,7 @@ To keep them fresh:
 - Call `record.truffler_refresh_labels!` when the answers change somewhere truffler cannot see, such as the job that runs your classifier after insert. It rewrites the record's supplied labels immediately, with no Jev call.
 - Bump `version:` when the logic behind `from:` changes. That changes the vocabulary version, so `rake truffler:backfill` rewrites the label for every record, again at no cost.
 
-A supplied label's fingerprint digests its type, options, legend, description, and `version:`, never the Jev model, so changing `config.model` does not rewrite supplied labels.
+A supplied label's fingerprint digests its type, option keys, legend, and `version:`, never the Jev model or its wording, so changing `config.model`, `description:`, or an option's description or search text does not rewrite supplied labels. Wording changes only re-key the query-encoding cache.
 
 ## Clients
 
@@ -183,7 +184,9 @@ result = Email.truffler(params[:q], tenant: Current.account.id, scope: Current.a
 
 A keystroke search makes no network call. It reads the query encoding and query vector from the cache. When the cache misses, it enqueues `EncodeQueryJob`, and the next keystroke or reload picks up the result.
 
-Query encoding sends Jev the label vocabulary (each label's description and a choice label's option names) next to the query, and asks for each label whether the query filters on it, prefers it, or ignores it, plus the role of each word. A choice label's option question also offers `Truffler::NO_OPTION` (`"truffler:none"`), meaning the query names none of its options, so a host option literally called `none` stays filterable. Word roles are then checked locally: a word that names a label the query applies (its key, a word of its key, or the chosen option key, ignoring case and plurals or sharing their first three letters when both words have four letters or more, so "angry" names `anger`; or, matched exactly, a word of that option's display name or description) counts as naming the label, and common stopwords are dropped. When the encoding applies a label filter, the filter decides which records match and keyword hits only rank them; without one, the remaining keywords must match.
+Query encoding sends Jev the label vocabulary (each label's description and a choice label's option names) next to the query, and asks for each label whether the query filters on it, prefers it, or ignores it, plus the role of each word. A choice label's option question also offers `Truffler::NO_OPTION` (`"truffler:none"`), meaning the query names none of its options, so a host option literally called `none` stays filterable. Word roles are then checked locally: a word that names a label the query applies (its key, a word of its key, or the chosen option key, ignoring case and plurals or sharing their first three letters when both words have four letters or more, so "angry" names `anger`; or, matched exactly, a word of that option's display name or description) counts as naming the label, and common stopwords and `config.filler_words` (generic nouns such as "customers", "users", "emails") are dropped. They are kept only when dropping them would leave no keyword, no applied label, and no time phrase, so "customers in the last 3 hours" lists the window's records while a lone "customers" still searches text; the same rule applies before the encoding is cached. When the encoding applies a label filter, the filter decides which records match and keyword hits only rank them; without one, the remaining keywords must match.
+
+When the searcher removes a chip, the words that named only that label (or only labels that are now all removed) become keywords again, so removing the `urgent` chip from "urgent refunds" searches for both words. A word that named a label or option key only by shared prefix ("urgently" for `urgent`) also adds a small keyword score (a quarter of the keyword weight) while its label applies, ranking records whose text contains it higher without requiring it.
 
 Time phrases are handled in Ruby and never asked of Jev: `today`, `yesterday`, `this week`, `last week`, `this month`, `last month`, `past|last N hours|days|weeks|months`, `last hour`, `past hour`, `past week`, `past month`, and `since monday` through `since sunday`. "Past/last N units" is a rolling window ending now; "this/last week" and "this/last month" are calendar windows. The first one in a query limits results to records whose `arrived_at` column falls in that window, its words are not keywords, and it shows as a chip `{key: "time", label: "time", kind: :time, name: "This week"}`. Pass `"time"` in `suppressed:` to drop it. Weeks start on `Date.beginning_of_week`, and the window is computed from `Time.current` (or a `clock:` callable passed to the search, for tests).
 
@@ -343,6 +346,7 @@ Set these in `Truffler.configure do |config| ... end`.
 | `embedder` | `Embeddings::RubyLLMEmbedder.new` | Any `Embeddings::Embedder` subclass. The default calls `RubyLLM.embed`, which works on ruby_llm 1.x and 2. |
 | `embedding_cost_per_million_tokens` | 0.02 | Embedding price. |
 | `vector_store` | `:auto` | `:neighbor` (pgvector `<=>`, or sqlite-vec `vec_distance_cosine` when you load the extension), `:ruby` (exact cosine in Ruby), or `:auto` (neighbor when available, otherwise Ruby). A model declaring `embeddings column:` always reads its own column. |
+| `filler_words` | `customer(s) people person user(s) message(s) email(s) item(s) stuff thing(s)` | Generic nouns never required as keywords on their own (matched ignoring plurals). Replace the list or extend it (`config.filler_words += %w[ticket]`). |
 | `encoding_prefetch` | `QueryEncoding::Prefetch.new` | Cache-miss hook, called as `call(model, query, cache_key:, tenant_key:, user_key:)`. |
 | `encoding_deadline` | 1.0 | Seconds a Smart run waits for an in-flight query encoding. |
 | `rerank_depth`, `rerank_chunk_size`, `rerank_max_field_chars` | 30, 10, 1,200 | Candidates reranked, candidates per Jev request, characters per field sent. |
@@ -367,7 +371,7 @@ Truffler enqueues most of its own jobs. Run a worker for `config.queue_name` and
 | `bin/rails "truffler:backfill[Email]"` (see Backfill) or `Truffler::Jobs::BackfillJob.perform_later("Email")` | After adopting Truffler, changing a declaration, or changing the model pin. |
 | `Truffler::Embeddings::Backfill.new(Email).enqueue` | After enabling embeddings or changing the embedding model, width, or fields, to re-embed everything now instead of through the `ResumeJob` sweep. It enqueues 1,000 jobs at a time; pass `limit:` to cap the total. |
 
-`bin/rails "truffler:status[Email]"` prints labeling counts and the backfill spend for the current vocabulary version. `bin/rails "truffler:suggestions[Email]"` prints candidate questions drawn from logged query misses.
+`bin/rails "truffler:status[Email]"` prints labeling counts and the backfill spend for the current vocabulary version; `bin/rails truffler:status` prints them for every registered Truffler model. `bin/rails "truffler:suggestions[Email]"` prints candidate questions drawn from logged query misses.
 
 With Solid Queue, for example:
 
