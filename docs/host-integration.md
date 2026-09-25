@@ -9,7 +9,7 @@ Truffler returns data. Your app renders it. This guide maps each field Truffler 
 | UI element | Source | Notes |
 |---|---|---|
 | Result list | `result.records` | Already scoped to your `scope:` and tenant, and ranked. Keep the order. |
-| Chips | `result.chips` | `[{key:, label:, kind:, name:}]`, filters first, then boosts. `kind` is `:filter` (narrows the results) or `:boost` (reorders them). Show `name`. When the searcher removes a chip, send its `key` back in `suppressed:`, and cancel any Smart run. |
+| Chips | `result.chips` | `[{key:, label:, kind:, name:}]`, filters first, then boosts, then the time range. `kind` is `:filter` (narrows the results), `:boost` (reorders them), or `:time` (a time phrase such as "this week", key `"time"`). Show `name`. When the searcher removes a chip, send its `key` back in `suppressed:`, and cancel any Smart run. |
 | Smart search invite row | `result.invite_row` | `nil` means no row. Otherwise it is `{query:, reason:}`, where `reason` is one of the values below. |
 | Pending indicator | `result.encoding_status` | `:pending` means the query encoding is in flight, so a reload shortly will rank by intent. `:cached` means intent ranking already applied. `:none` means no encoding applies. |
 | Explicit action hint | `result.explicit_action` | The surface's declared action (`:enter`, `:key`, or `:row`), or nil when no `surface:` was passed. Label the invite row with it. |
