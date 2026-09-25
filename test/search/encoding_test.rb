@@ -34,7 +34,8 @@ class SearchEncodingTest < Truffler::TestCase
   test "keywords default to the query tokens that are not label terms" do
     query = Query.new("emails I need to act on")
 
-    assert_equal %w[emails i to on], Encoding.new(label_term_tokens: %w[need act]).keywords(query)
+    assert_equal %w[emails], Encoding.new(label_term_tokens: %w[need act]).keywords(query)
+    assert_equal %w[i to on], Encoding.new(label_term_tokens: %w[need act emails]).keywords(Query.new("emails I need to act on"))
     assert_equal %w[emails], Encoding.new(keyword_tokens: %w[emails]).keywords(query)
   end
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.4]
+
+Fixes from happyhappy production.
+
+- Generic filler nouns are no longer required keywords. "customers in the last 3 hours" returned nothing while "in the last 3 hours" returned the records. New `config.filler_words` (default: customer, customers, people, person, user, users, message, messages, email, emails, item, items, stuff, thing, things; replace or extend it, matched ignoring plurals). One rule now serves both the encoder's word reconciliation and the cold-cache keywords: stopwords and filler words are dropped unless that would leave the search with no keyword, no applied label, and no time phrase, so a lone "customers" still searches text and "customers refund this week" requires only "refund".
+- `rake truffler:status` with no model prints the status of every registered Truffler model instead of " is not a Truffler model". An unknown model name still aborts with a message.
+- A choice option may be `{ description:, search: }`: the long description stays what Jev labels with, and the short search text drives query-word matching and the request state's `option_names`. Plain descriptions and per-tenant callables keep working, and callables may return the new shape. Labeling fingerprints now cover only what Jev labels with: asked labels are unchanged (search texts are not part of the question), and a supplied label's fingerprint digests its type, option keys, legend, and `version:` but no longer its descriptions. Descriptions and search texts go into a separate encoding version that keys the query-encoding cache, so rewording re-encodes queries without staling labels.
+- Removing a chip gives its words back to the keywords. The cached encoding records which applied labels each label-term word named (by token position, no query text); once every one of them is removed, the word is a keyword again, so "urgent refunds" without the urgent chip matches both words. A word that named a label or option key only by shared prefix adds a soft keyword score (a quarter of the keyword weight) and is never required.
+- Upgrading from 0.1.3: supplied (`from:`) labels get a new fingerprint, so their stored rows and record states read stale once. `rake truffler:backfill` (or the next watched change) rewrites them at no Jev cost; the new vocabulary version also starts a fresh backfill spend ledger. Query encodings cached by 0.1.3 miss once and are re-encoded.
+- Removing the chip that justified dropping a filler word (the time range, or the last applied label) brings the filler noun back as a keyword, cached or cold. When nothing anchors a search and only droppable words are left, filler nouns stay keywords and only pure stopwords are dropped ("the customers" searches "customers").
+
 ## [0.1.3]
 
 - Display-name and description words of an applied choice option now match query words exactly (ignoring case and plurals) instead of by shared three-letter prefix. Under a filter, ordinary search words such as "email", "inbox" and "summary" (with Cora applied) or "chat" and "change" (with billing applied) no longer become label terms and keep ranking results. Label keys and option keys still match by shared prefix, so "angry" names `anger`.

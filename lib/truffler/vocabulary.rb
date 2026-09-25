@@ -1,9 +1,9 @@
 module Truffler
   # A label's fingerprint is the SHA-256 of its canonical question plus the
   # pinned Jev model; a host-supplied label's is its supplied fingerprint
-  # (type, options, version), which no Jev model change touches. The
-  # vocabulary version digests every fingerprint. A stored label is stale
-  # when its fingerprint differs from the current one.
+  # (type, option keys, version), which no Jev model change or rewording
+  # touches. The vocabulary version digests every fingerprint. A stored
+  # label is stale when its fingerprint differs from the current one.
   #
   # A scope's vocabulary also holds its active lens labels (KTD21), so a lens
   # changes the version only where it applies. user_key is the searcher key
@@ -37,6 +37,16 @@ module Truffler
 
     def version(tenant_key: nil, user_key: nil, all_users: false)
       Canonical.digest(fingerprints(tenant_key: tenant_key, user_key: user_key, all_users: all_users))
+    end
+
+    # The version query encodings are cached under: the labeling version plus
+    # a digest of the wording only query encoding reads (label descriptions,
+    # option descriptions and search texts), which labeling never sees for
+    # supplied labels and never sees for search texts.
+    def encoding_version(tenant_key: nil, user_key: nil)
+      labels = labels_for(tenant_key: tenant_key, user_key: user_key)
+      Canonical.digest(version: Canonical.digest(labels.transform_values { |label| fingerprint_of(label, tenant_key) }),
+        wording: labels.transform_values { |label| label.encoding_wording(tenant_key) }.compact)
     end
 
     private
