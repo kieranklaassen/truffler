@@ -109,6 +109,20 @@ class LensIntegrationTest < Truffler::TestCase
     assert(@jev.calls.drop(1).all? { |call| call[:questions].keys.all? { |id| id.include?("lens#{lens.id}__") } })
   end
 
+  test "0.1.2: a lens backfill charges its lens row only, never the model's backfill spend ledger" do
+    Array.new(2) { |index| feed_message("Hallo #{index}", at: index.hours.ago) }
+    label_claimed
+    lens = dutch_lens
+    answer_lens_language(lens)
+
+    result = Lenses::Backfill.new(lens).run
+
+    assert_equal :complete, result.status
+    assert_operator lens.reload.spent_usd, :>, 0
+    assert_equal lens.spent_usd, result.spent_usd
+    assert_empty Truffler::Records::BackfillSpend.all
+  end
+
   test "the backfill job relabels everything in scope when the cap allows and records spend" do
     messages = Array.new(3) { |index| feed_message("Hallo #{index}", at: index.hours.ago) }
     feed_message("Hallo", account: 2)

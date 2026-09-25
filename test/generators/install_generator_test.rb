@@ -35,6 +35,14 @@ class InstallGeneratorTest < Rails::Generators::TestCase
     assert_equal :binary, connection.columns("truffler_embeddings").find { |column| column.name == "embedding" }.type
   end
 
+  test "0.1.2: a fresh install creates the backfill spend ledger" do
+    run_generator
+    connection = migrate_generated
+
+    assert_includes connection.tables, "truffler_backfill_spends"
+    assert unique_index?(connection, "truffler_backfill_spends", %w[record_type vocabulary_version])
+  end
+
   test "record ids can be strings for uuid primary keys" do
     run_generator [ "--record-id-type=string" ]
     connection = migrate_generated

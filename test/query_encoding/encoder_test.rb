@@ -25,6 +25,19 @@ class ProductEmail < ActiveRecord::Base
   end
 end
 
+class NamedOptionEmail < ActiveRecord::Base
+  self.table_name = "emails"
+  include Truffler::Model
+
+  truffler do
+    tenant :account_id
+    reads :subject
+    label :product, :choice, question: "Which product is this about?",
+      options: { "prod-a1" => "Cora, the AI email assistant", "prod-b2" => "Billing portal" }, filter_at: 0.5
+    label :tool, :choice, question: "Which tool is this about?", options: ->(_tenant) { { "p_17" => "Spiral writing tool", "p_18" => nil } }
+  end
+end
+
 class QueryEncodingEncoderTest < Truffler::TestCase
   include Truffler::Test::SearchHelpers
 
@@ -279,6 +292,35 @@ class QueryEncodingEncoderTest < Truffler::TestCase
     later = search(InboxEmail, "plumber")
     assert_equal :cached, later.encoding_status
     assert_equal [ pay.id ], later.records.map(&:id)
+  end
+
+  test "0.1.2: a word of an applied option's description names it, though the option key shares no word with it" do
+    @fake.answer("intent__product", "filter").answer("option__product", "prod-a1")
+      .answer("intent__tool", "boost").answer("option__tool", "p_17")
+
+    encoding = Encoder.new.encode(prefetch(NamedOptionEmail, "cora assistants about the spiral writer invoices"))
+
+    assert_equal({ "product:prod-a1" => 0.5 }, encoding.filters)
+    assert_equal %w[cora assistants spiral writer], encoding.label_term_tokens
+    assert_equal %w[invoices], encoding.keyword_tokens
+  end
+
+  test "0.1.2: description words of an option the query does not apply stay keywords" do
+    @fake.answer("intent__product", "filter").answer("option__product", "prod-b2")
+
+    encoding = Encoder.new.encode(prefetch(NamedOptionEmail, "cora billing spiral"))
+
+    assert_equal %w[billing], encoding.label_term_tokens
+    assert_equal %w[cora spiral], encoding.keyword_tokens
+  end
+
+  test "0.1.2: the request state carries choice option display names, per tenant" do
+    labels = Encoder.new.request(NamedOptionEmail, Query.new("spiral"), tenant_key: "1").state["labels"]
+
+    assert_equal %w[prod-a1 prod-b2], labels["product"]["options"]
+    assert_equal({ "prod-a1" => "Cora, the AI email assistant", "prod-b2" => "Billing portal" }, labels["product"]["option_names"])
+    assert_equal({ "p_17" => "Spiral writing tool" }, labels["tool"]["option_names"])
+    assert_nil Encoder.new.request(InboxEmail, Query.new("x"), tenant_key: "1").state["labels"]["category"]["option_names"]
   end
 
   test "0.1.1: a word sharing a label's first letters names it ('urgently' names urgent), a short or unrelated word does not" do

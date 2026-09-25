@@ -11,38 +11,83 @@ module Truffler
     # done, and records already current are skipped, so a rerun never asks
     # Jev about them again. A spend cap stops the run before a request would
     # exceed it; host-supplied labels cost nothing, so they are still written
-    # once the cap is reached. A Jev error releases the claimed rows and ends
+    # once the cap is reached. The cap counts everything spent under the
+    # model's current app-wide vocabulary version, kept in the
+    # truffler_backfill_spends ledger, so reruns and overlapping jobs share
+    # it; without that table it falls back to this run plus `spent:`. A Jev error releases the claimed rows and ends
     # the run with `:client_error`, so the caller keeps the spend metered so far.
+    #
+    # A budget denial ends the run with `:budget_denied`, unless the run
+    # waits: then it backs off (see .backoff) and retries from the same
+    # cursor until it completes, reaches the spend cap, or runs out of
+    # `max_duration` seconds, which pauses it with the cursor to resume from.
     class Backfill
-      Result = Data.define(:status, :labeled, :requests, :cost, :cursor)
+      Result = Data.define(:status, :labeled, :requests, :cost, :cursor, :retry_after)
+
+      INITIAL_BACKOFF = 1.0
+      MAX_BACKOFF = 30.0
+
+      class_attribute :sleeper, default: ->(seconds) { sleep(seconds) }
+      class_attribute :clock, default: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
 
       STATES = Records::RecordState.table_name
 
       class SpendCapReached < StandardError; end
 
       # Wraps the client to meter spend per request and refuse a request whose
-      # estimated cost would push spend past the cap.
+      # estimated cost would push spend past the cap. With a ledger the
+      # estimate is reserved in SQL before the request and settled to the
+      # reported cost after it, so concurrent meters on one ledger never
+      # both take the last of the cap.
       class SpendMeter
-        attr_reader :spent, :requests
+        attr_reader :requests, :cost
 
-        def initialize(client, cap:, spent:, config: Truffler.config)
+        def initialize(client, cap:, spent:, ledger: nil, config: Truffler.config)
           @client = client
           @cap = cap
           @spent = spent.to_f
+          @ledger = ledger
           @requests = 0
+          @cost = 0.0
           @config = config
         end
 
-        def ask(state:, questions:, **options)
-          raise SpendCapReached if @cap && @spent + estimate(state, questions) > @cap
+        def spent
+          @ledger ? @ledger.total : @spent
+        end
 
-          answers = @client.ask(state: state, questions: questions, **options)
-          @requests += 1
-          @spent += answers.usage&.cost.to_f
+        def ask(state:, questions:, **options)
+          estimate = estimate(state, questions)
+          reserve(estimate)
+          answers = nil
+          begin
+            answers = @client.ask(state: state, questions: questions, **options)
+          ensure
+            @ledger&.settle(-estimate, requests: 0) unless answers
+          end
+          record(answers.usage&.cost.to_f, estimate)
           answers
         end
 
         private
+
+        def record(cost, estimate)
+          @requests += 1
+          @cost += cost
+          if @ledger
+            @ledger.settle(cost - estimate)
+          else
+            @spent += cost
+          end
+        end
+
+        def reserve(estimate)
+          if @ledger
+            raise SpendCapReached unless @ledger.reserve(estimate, @cap)
+          elsif @cap && @spent + estimate > @cap
+            raise SpendCapReached
+          end
+        end
 
         def estimate(state, questions)
           @config.cost_for(Tokens.estimate({ state: state, questions: questions }))
@@ -51,6 +96,34 @@ module Truffler
 
       def self.status(model)
         new(model).status
+      end
+
+      # The ledger row for the model's current vocabulary version, or nil
+      # when nothing was spent yet or the ledger table is missing.
+      def self.spend(model)
+        return unless Records::BackfillSpend.available?
+
+        Records::BackfillSpend.for_model(model).find_by(vocabulary_version: ledger_version(model))
+      end
+
+      # Zeroes the current vocabulary version's ledger in place, so a chain
+      # still running keeps its row and continues against the fresh total.
+      def self.reset_spend!(model)
+        return unless Records::BackfillSpend.available?
+
+        Records::BackfillSpend.for_model(model).where(vocabulary_version: ledger_version(model))
+          .update_all(spent_usd: 0.0, requests: 0, updated_at: Time.current)
+      end
+
+      def self.ledger_version(model)
+        model.truffler_definition.vocabulary.version(all_users: true)
+      end
+
+      # Seconds to wait after `denials` consecutive budget denials with no
+      # work in between: 1, 2, 4, ... capped at MAX_BACKOFF, or the budget's
+      # retry hint when that is longer.
+      def self.backoff(denials, retry_after = nil)
+        [ [ INITIAL_BACKOFF * (2**denials), MAX_BACKOFF ].min, retry_after.to_f ].max
       end
 
       attr_reader :model, :batch_size, :page_size
@@ -62,32 +135,35 @@ module Truffler
         @batch_size = batch_size
         @page_size = page_size || batch_size * 5
         @cursor = cursor
-        @meter = SpendMeter.new(client, cap: spend_cap, spent: spent)
+        @spend_cap = spend_cap
+        @spent = spent
+        @client = client
         @budget = budget
         @versions = {}
       end
 
-      def run(max_pages: nil)
+      # `progress` is called with the result so far and the delay before each
+      # wait; it carries counts, cost, and the cursor, never record text.
+      def run(max_pages: nil, wait: false, max_duration: nil, sleeper: self.class.sleeper, clock: self.class.clock,
+        progress: nil)
         @labeled = 0
-        @started_spent = @meter.spent
-        cursor = @cursor
-        pages = 0
+        @started_cost = meter.cost
+        @pages = 0
+        deadline = max_duration && clock.call + max_duration
+        denials = 0
 
         loop do
-          scanned, rows = page(cursor)
-          return result(:complete, nil) if scanned.empty?
-          return result(:paused, cursor) if max_pages && pages >= max_pages
+          before = [ @labeled, meter.requests ]
+          status = sweep(max_pages, deadline, clock)
+          return result(status) unless wait && status == :budget_denied
 
-          rows.group_by(&:last).each do |tenant_key, tenant_rows|
-            tenant_rows.map(&:first).each_slice(batch_size) do |ids|
-              stop = label(ids, tenant_key)
-              return result(stop, cursor) if stop
-            end
-          end
+          denials = 0 unless before == [ @labeled, meter.requests ]
+          delay = self.class.backoff(denials, @retry_after)
+          return result(:paused) if deadline && clock.call + delay > deadline
 
-          cursor = scanned.last
-          pages += 1
-          return result(:complete, nil) if scanned.size < page_size
+          progress&.call(result(status), delay)
+          sleeper.call(delay)
+          denials += 1
         end
       end
 
@@ -118,13 +194,47 @@ module Truffler
         @queue ||= Queue.new(model)
       end
 
+      # Spend carried in with `spent:` is ignored when the ledger holds it.
+      def meter
+        @meter ||= begin
+          ledger = Records::BackfillSpend.ledger(model, version_for(nil)) if Records::BackfillSpend.available?
+          SpendMeter.new(@client, cap: @spend_cap, spent: ledger ? 0.0 : @spent, ledger: ledger)
+        end
+      end
+
       def version_for(tenant_key)
         @versions[tenant_key] ||= definition.vocabulary.version(tenant_key: tenant_key, all_users: true)
       end
 
-      def result(status, cursor)
-        Result.new(status: status, labeled: @labeled, requests: @meter.requests, cost: @meter.spent - @started_spent,
-          cursor: cursor)
+      def result(status)
+        Result.new(status: status, labeled: @labeled, requests: meter.requests, cost: meter.cost - @started_cost,
+          cursor: @cursor, retry_after: (@retry_after if status == :budget_denied))
+      end
+
+      # Walks pages below @cursor until done or stopped, returning the status.
+      def sweep(max_pages, deadline, clock)
+        @retry_after = nil
+        loop do
+          scanned, rows = page(@cursor)
+          return complete if scanned.empty?
+          return :paused if (max_pages && @pages >= max_pages) || (deadline && clock.call >= deadline)
+
+          rows.group_by(&:last).each do |tenant_key, tenant_rows|
+            tenant_rows.map(&:first).each_slice(batch_size) do |ids|
+              stop = label(ids, tenant_key)
+              return stop if stop
+            end
+          end
+
+          @cursor = scanned.last
+          @pages += 1
+          return complete if scanned.size < page_size
+        end
+      end
+
+      def complete
+        @cursor = nil
+        :complete
       end
 
       # Returns the scanned ids (for the cursor) and the [id, tenant_key] rows
@@ -173,10 +283,14 @@ module Truffler
         return if claimed.empty?
 
         begin
-          Labeler.new(model, client: @meter, budget: @budget).label(claimed, priority: :backfill)
-        rescue BudgetExhausted, SpendCapReached => error
+          Labeler.new(model, client: meter, budget: @budget).label(claimed, priority: :backfill)
+        rescue SpendCapReached
           queue.demote(claimed)
-          return error.is_a?(SpendCapReached) ? :spend_cap_reached : :budget_denied
+          return :spend_cap_reached
+        rescue BudgetExhausted => error
+          queue.demote(claimed)
+          @retry_after = error.retry_after
+          return :budget_denied
         rescue ClientError, IncompleteAnswers => error
           queue.release(claimed, error)
           return :client_error

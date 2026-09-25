@@ -128,14 +128,108 @@ class BackfillTest < Truffler::TestCase
     assert_equal 4, State.where(status: "labeled").count
   end
 
-  test "a spend cap counts spend already carried in from earlier runs" do
+  def without_ledger_table
+    Truffler::Records::BackfillSpend.instance_variable_set(:@missing_warned, nil)
+    Truffler::Test::Schema.without_table("truffler_backfill_spends") { yield }
+  ensure
+    Truffler::Records::BackfillSpend.instance_variable_set(:@missing_warned, nil)
+  end
+
+  def hide_states(emails)
+    State.where(record_id: emails.map(&:id)).delete_all
+    clear_enqueued_jobs
+  end
+
+  test "0.1.2: backfill spend persists across runs, so a second run stops at the cap" do
+    create_emails(2)
+    State.delete_all
+    cap = request_cost(2) * 2
+
+    first = Backfill.new(Email, spend_cap: cap, batch_size: 2).run
+    hide_states(create_emails(4))
+    second = Backfill.new(Email, spend_cap: cap, batch_size: 2).run
+
+    assert_equal [ :complete, 1 ], [ first.status, first.requests ]
+    assert_equal [ :spend_cap_reached, 1 ], [ second.status, second.requests ]
+    assert_equal 2, @fake.calls.size
+    ledger = Backfill.spend(Email)
+    assert_equal [ Email.polymorphic_name, 2 ], [ ledger.record_type, ledger.requests ]
+    assert_in_delta cap, ledger.spent_usd, 1e-12
+    assert_operator ledger.spent_usd, :<=, cap + 1e-12
+  end
+
+  test "0.1.2: overlapping backfill chains share one ledger and cannot spend past the cap together" do
+    create_emails(10)
+    State.delete_all
+    cap = request_cost(2) * 3
+    overlap = nil
+    started = false
+    nested = Class.new(Truffler::Clients::Fake) do
+      define_method(:perform) do |**kwargs|
+        unless started
+          started = true
+          overlap = Backfill.new(Email, spend_cap: cap, batch_size: 2, client: self).run
+        end
+        super(**kwargs)
+      end
+    end.new
+    nested.answer(:needs_action, 0.8).answer(:urgent, 0.9)
+
+    first = Backfill.new(Email, spend_cap: cap, batch_size: 2, client: nested).run
+
+    assert_equal [ :spend_cap_reached, :spend_cap_reached ], [ first.status, overlap.status ]
+    assert_equal 3, nested.calls.size
+    assert_equal 3, first.requests + overlap.requests
+    assert_equal 3, Backfill.spend(Email).requests
+    assert_operator Backfill.spend(Email).spent_usd, :<=, cap + 1e-12
+  end
+
+  test "0.1.2: a vocabulary change starts a new ledger" do
+    create_emails(2)
+    State.delete_all
+    cap = request_cost(2)
+    Backfill.new(Email, spend_cap: cap).run
+    old_version = Email.truffler_definition.vocabulary.version(all_users: true)
+    reword_urgent
+
+    result = Backfill.new(Email, spend_cap: cap).run
+
+    assert_equal :complete, result.status
+    ledgers = Truffler::Records::BackfillSpend.order(:id).pluck(:vocabulary_version, :requests)
+    assert_equal [ [ old_version, 1 ], [ Email.truffler_definition.vocabulary.version(all_users: true), 1 ] ], ledgers
+  end
+
+  test "0.1.2: reset_spend! starts a fresh ledger for the current vocabulary" do
+    create_emails(2)
+    State.delete_all
+    cap = request_cost(2)
+    Backfill.new(Email, spend_cap: cap).run
+    hide_states(create_emails(2))
+    assert_equal :spend_cap_reached, Backfill.new(Email, spend_cap: cap).run.status
+
+    Backfill.reset_spend!(Email)
+
+    assert_equal [ 0.0, 0 ], [ Backfill.spend(Email).spent_usd, Backfill.spend(Email).requests ]
+    assert_equal :complete, Backfill.new(Email, spend_cap: cap).run.status
+  end
+
+  test "0.1.2: without the ledger table a run warns once and meters spend per run, counting spend carried in" do
     create_emails(4)
     State.delete_all
     cost = request_cost(2)
+    log = StringIO.new
+    Truffler.config.logger = ActiveSupport::Logger.new(log)
 
-    result = Backfill.new(Email, spend_cap: cost * 2, spent: cost, batch_size: 2).run
+    without_ledger_table do
+      carried = Backfill.new(Email, spend_cap: cost * 2, spent: cost, batch_size: 2).run
+      again = Backfill.new(Email, spend_cap: cost * 2, batch_size: 2).run
 
-    assert_equal [ :spend_cap_reached, 1 ], [ result.status, @fake.calls.size ]
+      assert_equal [ :spend_cap_reached, :complete ], [ carried.status, again.status ]
+      assert_nil Backfill.spend(Email)
+    end
+
+    assert_equal 1, log.string.scan("truffler_backfill_spends").size
+    assert_match(/truffler:upgrade/, log.string)
   end
 
   test "an interrupted run and a second run label each record exactly once" do
@@ -194,6 +288,110 @@ class BackfillTest < Truffler::TestCase
     newest_two = Email.order(id: :desc).limit(2).pluck(:id)
     assert_equal newest_two.min, result.cursor
     assert_equal [ [ "pending", "backfill" ] ] * 2, State.where.not(record_id: newest_two).pluck(:status, :priority)
+  end
+
+  # Advances only when the backfill sleeps, so waiting tests never sleep.
+  class FakeClock
+    attr_reader :now, :sleeps
+
+    def initialize
+      @now = 0.0
+      @sleeps = []
+    end
+
+    def call
+      now
+    end
+
+    def sleep(seconds)
+      @sleeps << seconds
+      @now += seconds
+    end
+  end
+
+  def scripted_budget(*outcomes)
+    budget = Truffler::Budget.new
+    decisions = outcomes.map do |outcome, retry_after|
+      Truffler::Budget::Decision.new(outcome: outcome, priority: :backfill, reason: (:exhausted if outcome == :denied),
+        retry_after: retry_after)
+    end
+    budget.define_singleton_method(:acquire) { |**| decisions.shift || Truffler::Budget::Decision.new(:granted, :backfill, nil) }
+    budget
+  end
+
+  def always_denied_budget
+    budget = Truffler::Budget.new
+    budget.define_singleton_method(:acquire) { |**| Truffler::Budget::Decision.new(:denied, :backfill, :exhausted) }
+    budget
+  end
+
+  test "0.1.2: waiting mode backs off on budget denials and resumes from the same cursor until complete" do
+    create_emails(4)
+    State.delete_all
+    clock = FakeClock.new
+    budget = scripted_budget([ :granted ], [ :denied ], [ :denied ], [ :denied ])
+
+    result = Backfill.new(Email, batch_size: 2, page_size: 2, budget: budget)
+      .run(wait: true, sleeper: clock.method(:sleep), clock: clock)
+
+    assert_equal [ :complete, 4, 2, nil ], [ result.status, result.labeled, result.requests, result.cursor ]
+    assert_equal [ 1.0, 2.0, 4.0 ], clock.sleeps
+    assert_equal [ "labeled" ] * 4, State.pluck(:status)
+    assert_equal 2, @fake.calls.size
+  end
+
+  test "0.1.2: backoff starts at 1 s, doubles, caps at 30 s, and honors a longer retry hint" do
+    assert_equal [ 1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0 ], (0..6).map { |denials| Backfill.backoff(denials) }
+    assert_equal 5.0, Backfill.backoff(0, 5.0)
+    assert_equal 4.0, Backfill.backoff(2, 0.2)
+  end
+
+  test "0.1.2: waiting mode waits at least the budget's retry hint" do
+    create_emails(2)
+    State.delete_all
+    clock = FakeClock.new
+
+    result = Backfill.new(Email, batch_size: 2, budget: scripted_budget([ :denied, 3.0 ]))
+      .run(wait: true, sleeper: clock.method(:sleep), clock: clock)
+
+    assert_equal :complete, result.status
+    assert_equal [ 3.0 ], clock.sleeps
+  end
+
+  test "0.1.2: max_duration stops a waiting backfill with :paused and the cursor to resume from" do
+    emails = create_emails(4)
+    State.delete_all
+    clock = FakeClock.new
+    budget = scripted_budget([ :granted ], *Array.new(10) { [ :denied ] })
+
+    result = Backfill.new(Email, batch_size: 2, page_size: 2, budget: budget)
+      .run(wait: true, max_duration: 10, sleeper: clock.method(:sleep), clock: clock)
+
+    assert_equal [ :paused, emails[2].id, 2 ], [ result.status, result.cursor, result.labeled ]
+    assert_equal [ 1.0, 2.0, 4.0 ], clock.sleeps
+    assert_equal [ [ "pending", "backfill" ] ] * 2, State.where(record_id: emails.first(2).map(&:id)).pluck(:status, :priority)
+  end
+
+  test "0.1.2: waiting mode reports progress before each wait without record text" do
+    create_emails(2)
+    State.delete_all
+    clock = FakeClock.new
+    reports = []
+
+    Backfill.new(Email, batch_size: 2, budget: scripted_budget([ :denied ]))
+      .run(wait: true, sleeper: clock.method(:sleep), clock: clock, progress: ->(result, delay) { reports << [ result, delay ] })
+
+    assert_equal 1, reports.size
+    result, delay = reports.sole
+    assert_equal [ :budget_denied, 0, 1.0 ], [ result.status, result.labeled, delay ]
+    assert_equal %i[status labeled requests cost cursor retry_after], result.to_h.keys
+  end
+
+  test "0.1.2: without wait a denial still ends the run with :budget_denied" do
+    create_emails(2)
+    State.delete_all
+
+    assert_equal :budget_denied, Backfill.new(Email, budget: always_denied_budget).run.status
   end
 
   test "resumes below a cursor" do

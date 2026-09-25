@@ -77,6 +77,23 @@ class BackfillJobTest < Truffler::TestCase
     assert job[:at], "the rescheduled job waits for budget"
   end
 
+  test "0.1.2: repeated denials reschedule with the backfill backoff, which resets once work lands" do
+    create_emails(4)
+    Truffler.config.batch_size = 2
+
+    freeze_time do
+      Truffler::Budget.stub(:new, deny_after(0)) { BackfillJob.perform_now("Email", denials: 2) }
+      stalled = enqueued_jobs.pop
+      assert_equal 3, ActiveJob::Arguments.deserialize(stalled[:args]).last[:denials]
+      assert_in_delta Time.current.to_f + 4.0, stalled[:at], 1e-3
+
+      Truffler::Budget.stub(:new, deny_after(1)) { BackfillJob.perform_now("Email", denials: 4) }
+      moving = enqueued_jobs.pop
+      assert_equal 1, ActiveJob::Arguments.deserialize(moving[:args]).last[:denials]
+      assert_in_delta Time.current.to_f + 1.0, moving[:at], 1e-3
+    end
+  end
+
   test "the rescheduled job finishes the backfill once budget returns" do
     create_emails(4)
     Truffler.config.batch_size = 2
@@ -173,6 +190,36 @@ class BackfillJobTest < Truffler::TestCase
     drain_jobs
 
     assert_equal 3, client.paid, "the retry resumes from the spend already made"
+    assert_equal 6, State.where(status: "labeled").count
+  end
+
+  test "0.1.2: a new BackfillJob chain starts from the spend its vocabulary version already made" do
+    create_emails(2)
+    Truffler.config.batch_size = 2
+    client = MeteredFlakyClient.new(fail_on: [])
+    Truffler.config.client = client
+    price = Truffler.config.cost_per_million_tokens
+
+    BackfillJob.perform_now("Email", spend_cap: 1.5 * price)
+    create_emails(4)
+    BackfillJob.perform_now("Email", spend_cap: 1.5 * price)
+    drain_jobs
+
+    assert_equal 2, client.paid, "the second chain sees the first chain's spend and stops at the cap"
+    assert_in_delta 2 * price, Truffler::Labeling::Backfill.spend(Email).spent_usd, 1e-12
+  end
+
+  test "0.1.2: carried spend is not counted twice when the ledger already holds it" do
+    create_emails(6)
+    Truffler.config.batch_size = 1
+    client = MeteredFlakyClient.new(fail_on: [])
+    Truffler.config.client = client
+    price = Truffler.config.cost_per_million_tokens
+
+    BackfillJob.perform_now("Email", spend_cap: 5.5 * price, max_pages: 1)
+    drain_jobs
+
+    assert_equal 6, client.paid
     assert_equal 6, State.where(status: "labeled").count
   end
 

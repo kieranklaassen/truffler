@@ -8,12 +8,14 @@ module Truffler
     # never asked (R18). Query text travels only in `state` ("query" and
     # "tokens"); a token question names its word by position, `tokens[n]`,
     # so searcher text never lands in an instruction (R8). The label
-    # vocabulary rides along in `state["labels"]` so a token question can
-    # tell a word that names a label from text to match.
+    # vocabulary, with choice option display names, rides along in
+    # `state["labels"]` so a token question can tell a word that names a
+    # label from text to match.
     #
     # Jev's word roles are then reconciled locally: a keyword that names a
-    # label the query applies (its key, a word of its key, or the chosen
-    # option, ignoring case and plurals, or sharing its first three letters) becomes a label term, and a common
+    # label the query applies (its key, a word of its key, the chosen option,
+    # or a word of that option's display name, ignoring case and plurals, or
+    # sharing its first three letters) becomes a label term, and a common
     # stopword becomes filler.
     #
     # Answers become a `Search::Encoding` with the KTD20 intent vector: boost
@@ -131,7 +133,7 @@ module Truffler
             boosts[key] = intent[key] = label.boost || DEFAULT_BOOST
           else next
           end
-          terms.concat(label_terms(key))
+          terms.concat(label_terms(key, option_name(label, key, tenant_key)))
         end
 
         query = Search::Query.new(request.state["query"])
@@ -189,7 +191,12 @@ module Truffler
       def vocabulary_state(labels, tenant_key)
         labels.transform_values do |label|
           entry = { "description" => label.description }
-          entry["options"] = label.options(tenant_key).keys if label.type == :choice
+          if label.type == :choice
+            options = label.options(tenant_key)
+            entry["options"] = options.keys
+            names = options.compact
+            entry["option_names"] = names if names.any?
+          end
           entry
         end
       end
@@ -212,13 +219,22 @@ module Truffler
       end
 
       # "category:billing" names "category" and "billing"; "needs_action"
-      # names "needs_action", "needs", and "action".
+      # names "needs_action", "needs", and "action". An option's display
+      # name adds its words minus stopwords: "p_17" shown as "Spiral writing
+      # tool" also names "spiral", "writing", and "tool".
       STEM = 3
 
-      def label_terms(storage_key)
+      def label_terms(storage_key, option_name = nil)
         label, option = Search::Encoding.split_key(storage_key)
-        [ label.split(":").last, option ].compact.flat_map { |name| [ name.downcase, *name.downcase.split(/[^\p{Alnum}]+/) ] }
-          .reject(&:empty?).map(&:singularize)
+        keys = [ label.split(":").last, option ].compact.flat_map { |name| [ name.downcase, *name.downcase.split(/[^\p{Alnum}]+/) ] }
+        words = option_name.to_s.downcase.split(/[^\p{Alnum}]+/).reject { |word| STOPWORDS.include?(word) }
+        (keys + words).reject(&:empty?).map(&:singularize)
+      end
+
+      def option_name(label, storage_key, tenant_key)
+        return unless label.type == :choice
+
+        label.options(tenant_key)[Search::Encoding.split_key(storage_key).last]
       end
 
       # "angry" names "anger": the same word ignoring plurals, or two words of

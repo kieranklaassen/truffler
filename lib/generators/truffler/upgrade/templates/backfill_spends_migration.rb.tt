@@ -1,0 +1,19 @@
+class CreateTrufflerBackfillSpends < ActiveRecord::Migration<%= migration_version %>
+  def up
+    return if table_exists?(:truffler_backfill_spends)
+
+    create_table :truffler_backfill_spends do |t|
+      t.string :record_type, null: false
+      t.string :vocabulary_version, null: false
+      t.float :spent_usd, null: false, default: 0.0
+      t.integer :requests, null: false, default: 0
+      t.timestamps
+    end
+    add_index :truffler_backfill_spends, [:record_type, :vocabulary_version], unique: true,
+      name: "index_truffler_backfill_spends_on_ledger"
+  end
+
+  def down
+    drop_table :truffler_backfill_spends, if_exists: true
+  end
+end

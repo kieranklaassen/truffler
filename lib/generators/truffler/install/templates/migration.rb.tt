@@ -105,5 +105,15 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
     end
     add_index :truffler_lens_versions, [:lens_id, :number], unique: true,
       name: "index_truffler_lens_versions_on_lens_and_number"
+
+    create_table :truffler_backfill_spends do |t|
+      t.string :record_type, null: false
+      t.string :vocabulary_version, null: false
+      t.float :spent_usd, null: false, default: 0.0
+      t.integer :requests, null: false, default: 0
+      t.timestamps
+    end
+    add_index :truffler_backfill_spends, [:record_type, :vocabulary_version], unique: true,
+      name: "index_truffler_backfill_spends_on_ledger"
   end
 end

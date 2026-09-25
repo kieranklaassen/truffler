@@ -8,12 +8,17 @@ module Truffler
   #
   # Outcomes: :granted takes a slot; :demoted means a tenant is over its live
   # cap and its records should wait at backfill priority (no slot is taken);
-  # :denied means skip, pause, or reschedule. Only live callers wait, up to
-  # max_wait. A cache that cannot count (the null store) never blocks.
+  # :denied means skip, pause, or reschedule, with `retry_after` seconds until
+  # the denying window rolls over. Only live callers wait, up to max_wait. A
+  # cache that cannot count (the null store) never blocks.
   class Budget
     PRIORITIES = %i[live encode rerank backfill].freeze
 
-    Decision = Data.define(:outcome, :priority, :reason) do
+    Decision = Data.define(:outcome, :priority, :reason, :retry_after) do
+      def initialize(outcome:, priority:, reason:, retry_after: nil)
+        super
+      end
+
       def granted? = outcome == :granted
       def demoted? = outcome == :demoted
       def denied? = outcome == :denied
@@ -38,9 +43,9 @@ module Truffler
         return Decision.new(:demoted, :backfill, :tenant_cap) unless take(tenant_counter(tenant_key), records, config.tenant_live_cap, taken)
       end
       if (cap = config.user_caps[priority]) && user_key
-        return deny(priority, :user_cap, taken) unless take(user_counter(priority, user_key), 1, cap, taken)
+        return deny(priority, :user_cap, taken, until_next_minute) unless take(user_counter(priority, user_key), 1, cap, taken)
       end
-      return deny(priority, :exhausted, taken) unless take_second(priority)
+      return deny(priority, :exhausted, taken, until_next_second) unless take_second(priority)
 
       Decision.new(:granted, priority, nil)
     end
@@ -54,7 +59,7 @@ module Truffler
 
       cap = config.user_caps[priority]
       return Decision.new(:granted, priority, nil) unless cap && user_key
-      return deny(priority, :user_cap, []) unless take(user_counter(priority, user_key), 1, cap)
+      return deny(priority, :user_cap, [], until_next_minute) unless take(user_counter(priority, user_key), 1, cap)
 
       Decision.new(:granted, priority, nil)
     end
@@ -97,10 +102,20 @@ module Truffler
       end
     end
 
-    def deny(priority, reason, taken)
+    def deny(priority, reason, taken, retry_after)
       taken.each { |key, amount| @cache.decrement(key, amount, expires_in: 2.minutes) }
       Instrumentation.instrument(:budget_denied, priority: priority)
-      Decision.new(:denied, priority, reason)
+      Decision.new(:denied, priority, reason, retry_after)
+    end
+
+    def until_next_second
+      now = @clock.call
+      now.floor + 1 - now
+    end
+
+    def until_next_minute
+      now = @clock.call
+      (minute + 1) * 60 - now
     end
 
     def tenant_counter(tenant_key)

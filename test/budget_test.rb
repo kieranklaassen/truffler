@@ -74,6 +74,20 @@ class BudgetTest < Truffler::TestCase
     2.times { assert budget.acquire(priority: :live).granted? }
   end
 
+  test "0.1.2: a denial carries a retry hint: the next second for a full second, the next minute for a user cap" do
+    budget = budget(per_minute: 160)
+    budget.acquire(priority: :live)
+
+    exhausted = budget.acquire(priority: :backfill)
+    assert_in_delta 0.8, exhausted.retry_after, 1e-9
+
+    Truffler.config.user_caps = { rerank: 1 }
+    budget.admit(priority: :rerank, user_key: "ann")
+    capped = budget.admit(priority: :rerank, user_key: "ann")
+    assert_in_delta 59.8, capped.retry_after, 1e-9
+    assert_nil budget.acquire(priority: :live).retry_after
+  end
+
   test "denied callers do not consume a slot" do
     budget = budget(per_minute: 160)
 

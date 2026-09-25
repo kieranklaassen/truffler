@@ -6,8 +6,11 @@ module Truffler
     # to `[from, to]`, where `to` is nil for "until now".
     #
     #   today, yesterday, this week, last week, this month, last month,
-    #   past|last N day(s)|week(s), since monday..sunday
+    #   past|last N hour(s)|day(s)|week(s)|month(s), past hour|week|month,
+    #   last hour, since monday..sunday
     #
+    # "past/last N units" and "past week" are rolling: they end now and
+    # start N units back. "this/last week/month" are calendar windows.
     # Weeks start on `Date.beginning_of_week` (Monday by default). Only the
     # first phrase in a query counts; a quoted phrase is exact text.
     TimePhrase = Data.define(:name, :positions, :resolver) do
@@ -36,15 +39,28 @@ module Truffler
         end
       end
 
+      UNITS = %i[hours days weeks months].to_h { |unit| [ unit.to_s, unit ] }
+        .merge(%i[hour day week month].to_h { |unit| [ unit.to_s, :"#{unit}s" ] }).freeze
+
       def self.rolling(tokens, start)
         return unless %w[past last].include?(tokens[start]) && tokens[start + 1].to_s.match?(/\A\d{1,3}\z/)
 
         count = Integer(tokens[start + 1], 10)
-        unit = { "day" => :days, "days" => :days, "week" => :weeks, "weeks" => :weeks }[tokens[start + 2]]
+        unit = UNITS[tokens[start + 2]]
         return unless unit && count.positive?
 
         name = "Last #{count} #{count == 1 ? unit.to_s.singularize : unit}"
         new(name: name, positions: [ start, start + 1, start + 2 ], resolver: ->(now) { [ now - count.public_send(unit), nil ] })
+      end
+
+      # "past hour", "past week", "past month", "last hour": one unit back
+      # from now. "last week" and "last month" stay calendar phrases.
+      def self.rolling_unit(tokens, start)
+        unit = tokens[start + 1]
+        return unless (tokens[start] == "past" && %w[hour week month].include?(unit)) || tokens[start, 2] == %w[last hour]
+
+        new(name: "#{tokens[start].capitalize} #{unit}", positions: [ start, start + 1 ],
+          resolver: ->(now) { [ now - 1.public_send(unit), nil ] })
       end
 
       def self.since(tokens, start)
@@ -57,6 +73,7 @@ module Truffler
 
       PATTERNS = [
         method(:rolling),
+        method(:rolling_unit),
         method(:since),
         fixed(%w[today], "Today") { |now| [ now.beginning_of_day, nil ] },
         fixed(%w[yesterday], "Yesterday") { |now| [ now.yesterday.beginning_of_day, now.beginning_of_day ] },
