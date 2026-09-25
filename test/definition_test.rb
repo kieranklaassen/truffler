@@ -212,4 +212,32 @@ class DefinitionTest < Truffler::TestCase
     assert_not Email.truffler_definition.per_tenant_vocabulary?
     assert_equal [ "folder:work", "folder:home" ], model.truffler_definition.label(:folder).storage_keys("1")
   end
+
+  test "0.1.1: a per-tenant choice with no options for a tenant is neither asked nor encoded there" do
+    Truffler.config.client = fake = Truffler::Clients::Fake.new
+    model = self.class.const_set(:SparseFolders, define_model("DefinitionTest::SparseFolders") do
+      truffler do
+        tenant :account_id
+        reads :subject
+        label :folder, :choice, question: "Which folder?", options: ->(tenant) { { "1" => %w[work home], "2" => {} }[tenant] }
+        label :urgent, :noul, question: "Urgent?"
+      end
+    end)
+    folder = model.truffler_definition.label(:folder)
+
+    assert_equal({}, folder.options("2"))
+    assert_equal({}, folder.options("3"))
+    record = model.create!(account_id: 2, subject: "Hi")
+    drain_jobs
+
+    assert_equal %w[r001__urgent], fake.calls.sole[:questions].keys
+    assert_equal %w[urgent], Truffler::Records::Label.where(record_id: record.id).pluck(:label_key)
+    request = Truffler::QueryEncoding::Encoder.new.request(model, Truffler::Search::Query.new("work"), tenant_key: "2")
+    assert_equal %w[intent__urgent token__0], request.questions.keys
+    assert_equal %w[urgent], request.state["labels"].keys
+    assert_includes Truffler::QueryEncoding::Encoder.new.request(model, Truffler::Search::Query.new("work"), tenant_key: "1")
+      .questions.keys, "option__folder"
+  ensure
+    self.class.send(:remove_const, :SparseFolders) if self.class.const_defined?(:SparseFolders, false)
+  end
 end

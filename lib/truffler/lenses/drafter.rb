@@ -84,7 +84,8 @@ module Truffler
       # regenerated.
       def vocabulary_for(model, scope, lens)
         definition = model.truffler_definition
-        declared = definition.labels.to_h { |key, label| [ key, label.question(scope.tenant_key) ] }
+        declared = definition.labels.select { |_, label| label.available?(scope.tenant_key) }
+          .to_h { |key, label| [ key, label.question(scope.tenant_key) ] }
         visible = Lenses.visible_lenses(model, tenant_key: scope.tenant_key, user_digest: scope.user_digest)
         visible = visible.reject { |other| other.id == lens&.id }
         declared.merge(visible.each_with_object({}) { |other, all| all.merge!(other.storage_questions) })

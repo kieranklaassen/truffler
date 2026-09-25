@@ -17,11 +17,13 @@ module Truffler
       @model = model
     end
 
-    # {key => LabelDefinition or Lenses::LensLabel}: the declared labels,
-    # then the lens labels keyed "lens:<id>:<label>".
+    # {key => LabelDefinition or Lenses::LensLabel}: the declared labels
+    # the tenant has (a per-tenant choice with no options for it is left
+    # out), then the lens labels keyed "lens:<id>:<label>".
     def labels_for(tenant_key: nil, user_key: nil, all_users: false)
+      declared = definition.per_tenant_vocabulary? ? definition.labels.select { |_, label| label.available?(tenant_key) } : definition.labels
       lenses = Lenses.labels(definition.model, tenant_key: tenant_key, user_key: user_key, all_users: all_users)
-      lenses.empty? ? definition.labels : definition.labels.merge(lenses)
+      lenses.empty? ? declared : declared.merge(lenses)
     end
 
     def fingerprint(label_key, tenant_key: nil)

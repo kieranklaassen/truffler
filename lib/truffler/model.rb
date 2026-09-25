@@ -62,8 +62,9 @@ module Truffler
     # outside the watched columns, e.g. from the job that classified it.
     def truffler_refresh_labels!
       definition = self.class.truffler_definition
-      keys = definition.supplied_labels.map(&:key)
-      Labeling::Supplied.new(self.class).write([ [ self, keys ] ], tenant_key: definition.tenant_key_for(self)) if keys.any?
+      tenant_key = definition.tenant_key_for(self)
+      keys = definition.supplied_labels.select { |label| label.available?(tenant_key) }.map(&:key)
+      Labeling::Supplied.new(self.class).write([ [ self, keys ] ], tenant_key: tenant_key) if keys.any?
       self
     end
 
