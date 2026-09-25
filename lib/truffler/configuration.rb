@@ -36,6 +36,7 @@ module Truffler
       @resume_pending_after = 5.minutes
       @vector_store = :auto
       @embedding_cost_per_million_tokens = 0.02
+      @encoding_prefetch = QueryEncoding::Prefetch.new
     end
 
     def client
