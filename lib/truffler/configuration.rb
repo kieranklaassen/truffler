@@ -17,6 +17,8 @@ module Truffler
     attr_reader :lenses
     attr_accessor :encoding_deadline, :rerank_depth, :rerank_chunk_size, :rerank_max_field_chars, :smart_thresholds,
       :smart_run_ttl, :smart_candidate_pool, :broadcaster
+    # Generic nouns that are never required keywords on their own (Search::Filler).
+    attr_accessor :filler_words
 
     def initialize(env: ENV)
       @model = "jev-latest"
@@ -50,6 +52,7 @@ module Truffler
       @smart_run_ttl = 15.minutes
       @smart_candidate_pool = 200
       @broadcaster = nil
+      @filler_words = Search::Filler::DEFAULT_WORDS.dup
     end
 
     def client

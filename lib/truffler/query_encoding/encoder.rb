@@ -16,7 +16,7 @@ module Truffler
     # label the query applies (its key, a word of its key, the chosen option,
     # or a word of that option's display name, ignoring case and plurals, or
     # sharing its first three letters) becomes a label term, and a common
-    # stopword becomes filler.
+    # stopword or `config.filler_words` noun becomes filler.
     #
     # Answers become a `Search::Encoding` with the KTD20 intent vector: boost
     # gives the declared boost, filter narrows and adds `filter_weight`
@@ -35,10 +35,7 @@ module Truffler
         "filler" => "A word that carries no meaning for the search"
       }.freeze
       NO_OPTION = Truffler::NO_OPTION
-      STOPWORDS = %w[
-        a about all an and any are at be by for from have i in is it me my now of on or our please so some that the their
-        them there they this to up us was we what when where which who why with you your
-      ].to_set.freeze
+      STOPWORDS = Search::Filler::STOPWORDS
 
       Request = Data.define(:state, :questions, :token_ids, :exact_tokens, :unasked_tokens)
 
@@ -205,18 +202,18 @@ module Truffler
 
       # {position => role} for every token. Time phrase words are "time";
       # exact tokens and unasked words are keywords; a keyword naming an
-      # applied label becomes a label term; stopwords become filler unless
-      # they are all that would be left of an encoding that applies nothing.
+      # applied label becomes a label term; stopwords and filler words
+      # become filler unless they are all that would be left of an encoding
+      # that applies no label and no time range (Search::Filler).
       def reconcile(query, answered, stems, terms)
         roles = query.tokens.each_index.to_h do |position|
           [ position, query.time_position?(position) ? "time" : answered.fetch(position, "keyword") ]
         end
         words = roles.keys.select { |position| roles[position] == "keyword" && !query.exact_tokens.include?(query.tokens[position]) }
         words.each { |position| roles[position] = "label_term" if names_label?(query.tokens[position], stems, terms) }
-        stopwords = words.select { |position| roles[position] == "keyword" && STOPWORDS.include?(query.tokens[position]) }
-        return roles if stems.empty? && roles.values.count("keyword") == stopwords.size
-
-        stopwords.each { |position| roles[position] = "filler" }
+        filler = words.select { |position| roles[position] == "keyword" && Search::Filler.word?(query.tokens[position]) }
+        Search::Filler.drop(filler, keyword_count: roles.values.count("keyword"), anchored: stems.any? || !query.time_phrase.nil?)
+          .each { |position| roles[position] = "filler" }
         roles
       end
 

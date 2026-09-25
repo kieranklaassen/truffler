@@ -10,7 +10,7 @@ module Truffler
     #   for the label term SUM(weight * value). Defaults to `boosts`; the
     #   encoder decides whether filtered labels also carry weight here.
     # - `keyword_tokens`: query tokens for the keyword source; nil means
-    #   every token that is not a label term.
+    #   every token that is not a label term or filler.
     # - `label_term_tokens`: tokens that named a label rather than a keyword.
     # - `time`: the query's `TimeRange`, resolved at search time and never
     #   cached, since "today" moves.
@@ -60,8 +60,11 @@ module Truffler
         end
       end
 
+      # Without encoder decisions (a cold cache), every search token that is
+      # not a label term, minus filler words (see Filler).
       def keywords(query)
-        keyword_tokens || (query.search_tokens - label_term_tokens)
+        keyword_tokens ||
+          Filler.keywords(query.search_tokens - label_term_tokens, anchored: !empty? || !time.nil?, exact: query.exact_tokens)
       end
 
       # The cache form: decisions plus token positions in the normalized
