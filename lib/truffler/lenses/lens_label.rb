@@ -39,6 +39,7 @@ module Truffler
 
       def filter_at = nil
       def boost = nil
+      def filter_weight = 0.0
     end
   end
 end

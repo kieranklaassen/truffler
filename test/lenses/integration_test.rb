@@ -229,4 +229,24 @@ class LensIntegrationTest < Truffler::TestCase
     assert_includes blended.sources, :vector
     assert_includes blended.sources, :labels
   end
+
+  test "query encoding asks about visible lens dimensions and boosts them into the intent vector" do
+    lens = dutch_lens
+    key = "lens:#{lens.id}:language"
+    encoder = Truffler::QueryEncoding::Encoder.new
+    query = Truffler::Search::Query.new("dutch speakers")
+
+    request = encoder.request(FeedMessage, query, tenant_key: "1")
+    assert_includes request.questions.keys, "intent__lens#{lens.id}__language"
+    assert_includes request.questions.keys, "option__lens#{lens.id}__language"
+    assert_not_includes encoder.request(FeedMessage, query, tenant_key: "2").questions.keys, "intent__lens#{lens.id}__language"
+
+    answers = Truffler::Answers.new(request.questions.keys.to_h do |id|
+      value = { "intent__lens#{lens.id}__language" => "boost", "option__lens#{lens.id}__language" => "dutch" }[id]
+      value ||= id.start_with?("token__") ? "keyword" : (id.start_with?("option__") ? "none" : "ignore")
+      [ id, { "type" => "choice", "choice" => value, "probabilities" => { value => 1.0 } } ]
+    end)
+    encoding = encoder.encoding_for(FeedMessage, request, answers, tenant_key: "1")
+    assert_equal [ "#{key}:dutch" ], encoding.intent_vector.keys
+  end
 end

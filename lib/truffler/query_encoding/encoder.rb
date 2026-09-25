@@ -38,17 +38,17 @@ module Truffler
         @sleeper = sleeper
       end
 
-      def request(model, query, tenant_key:)
-        definition = model.truffler_definition
+      def request(model, query, tenant_key:, user_key: nil)
+        labels = labels(model, tenant_key, user_key)
         questions = Questions.new
-        definition.labels.each_value do |label|
-          questions.choice(:"intent__#{label.key}", instructions: intent_instructions(label), criteria: INTENTS)
+        labels.each_value do |label|
+          questions.choice(:"intent__#{label.question_key}", instructions: intent_instructions(label), criteria: INTENTS)
         end
-        definition.labels.each_value do |label|
+        labels.each_value do |label|
           next unless label.type == :choice
 
           options = label.options(tenant_key).merge(NO_OPTION => "The query names none of these")
-          questions.choice(:"option__#{label.key}", instructions: %(Which "#{label.key}" option does the search query ask about?),
+          questions.choice(:"option__#{label.question_key}", instructions: %(Which "#{label.key}" option does the search query ask about?),
             criteria: options)
         end
 
@@ -72,7 +72,7 @@ module Truffler
         return unless pending
 
         model, query, tenant_key, user_key = pending.values_at(:model, :query, :tenant_key, :user_key)
-        return unless cache.key(model, query, tenant_key: tenant_key) == cache_key
+        return unless cache.key(model, query, tenant_key: tenant_key, user_key: user_key) == cache_key
 
         encoding = cache.encoded?(cache_key) ? cache.read_encoding(cache_key, query) : encode_labels(model, query, tenant_key, user_key)
         embed_query(model, query, tenant_key)
@@ -97,15 +97,15 @@ module Truffler
         end
       end
 
-      def encoding_for(model, request, answers, tenant_key:)
+      def encoding_for(model, request, answers, tenant_key:, user_key: nil)
         filters = {}
         boosts = {}
         intent = {}
-        model.truffler_definition.labels.each_value do |label|
+        labels(model, tenant_key, user_key).each_value do |label|
           key = storage_key(label, answers, tenant_key)
           next unless key
 
-          case answers.choice("intent__#{label.key}")
+          case answers.choice("intent__#{label.question_key}")
           when "filter"
             filters[key] = label.filter_at || DEFAULT_FILTER_AT
             intent[key] = label.filter_weight
@@ -127,7 +127,7 @@ module Truffler
       private
 
       def encode_labels(model, query, tenant_key, user_key)
-        return if model.truffler_definition.labels.empty?
+        return if labels(model, tenant_key, user_key).empty?
 
         started = Instrumentation.monotonic_ms
         decision = budget.acquire(priority: :encode, user_key: user_key)
@@ -136,10 +136,10 @@ module Truffler
           return
         end
 
-        request = request(model, query, tenant_key: tenant_key)
+        request = request(model, query, tenant_key: tenant_key, user_key: user_key)
         answers = client.ask(state: request.state, questions: request.questions, priority: decision.priority)
-        encoding = encoding_for(model, request, answers, tenant_key: tenant_key)
-        cache.write(model, query, encoding, tenant_key: tenant_key)
+        encoding = encoding_for(model, request, answers, tenant_key: tenant_key, user_key: user_key)
+        cache.write(model, query, encoding, tenant_key: tenant_key, user_key: user_key)
         Misses.hook.call(model, tenant_key: tenant_key, user_key: user_key, query: query.normalized) if encoding.empty?
         instrument(model, tenant_key, started, outcome: encoding.empty? ? "empty" : "encoded", question_count: request.questions.size,
           filter_count: encoding.filters.size, boost_count: encoding.intent_vector.size)
@@ -157,10 +157,14 @@ module Truffler
 
       # The label's storage key the query names, or nil for a choice label
       # whose option answer is `none`.
+      def labels(model, tenant_key, user_key)
+        model.truffler_definition.vocabulary.labels_for(tenant_key: tenant_key, user_key: user_key)
+      end
+
       def storage_key(label, answers, tenant_key)
         return label.key unless label.type == :choice
 
-        option = answers.choice("option__#{label.key}")
+        option = answers.choice("option__#{label.question_key}")
         "#{label.key}:#{option}" if option != NO_OPTION && label.options(tenant_key).key?(option)
       end
 
