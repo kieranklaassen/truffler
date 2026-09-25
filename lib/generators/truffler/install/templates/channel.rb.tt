@@ -8,9 +8,10 @@ class TrufflerChannel < ApplicationCable::Channel
 
   private
 
-  # Must return the same user key your controllers pass to Truffler searches,
-  # or nil to reject the subscription.
+  # Must return the same user key your controllers' Truffler searches derive
+  # from `user:` (a record becomes "User:42", anything else its to_s), or nil
+  # to reject the subscription. Pings carry only {run_id, section, changed_at}.
   def authorized_user_key
-    current_user&.id&.to_s
+    Truffler::Search::Keystroke.user_key(current_user) if current_user
   end
 end

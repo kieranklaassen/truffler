@@ -14,6 +14,8 @@ module Truffler
     attr_accessor :vector_store, :embedding_cost_per_million_tokens
     attr_accessor :encoding_prefetch
     attr_reader :lenses
+    attr_accessor :encoding_deadline, :rerank_depth, :rerank_chunk_size, :rerank_max_field_chars, :smart_thresholds,
+      :smart_run_ttl, :smart_candidate_pool, :broadcaster
 
     def initialize(env: ENV)
       @model = "jev-latest"
@@ -39,6 +41,14 @@ module Truffler
       @embedding_cost_per_million_tokens = 0.02
       @lenses = Lenses::Settings.new
       @encoding_prefetch = QueryEncoding::Prefetch.new
+      @encoding_deadline = 1.0
+      @rerank_depth = 30
+      @rerank_chunk_size = 10
+      @rerank_max_field_chars = 1_200
+      @smart_thresholds = { strong: 0.70, possible: 0.35 }
+      @smart_run_ttl = 15.minutes
+      @smart_candidate_pool = 200
+      @broadcaster = nil
     end
 
     def client
