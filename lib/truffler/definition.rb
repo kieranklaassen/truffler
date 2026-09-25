@@ -116,6 +116,14 @@ module Truffler
       @weak_below || DEFAULT_WEAK_BELOW
     end
 
+    attr_writer :invite_on_pending_encoding
+
+    # Whether a model with a `keyword` source shows the Smart search row while
+    # the query's encoding is in flight (AE10). Default true.
+    def invite_on_pending_encoding
+      @invite_on_pending_encoding.nil? || @invite_on_pending_encoding
+    end
+
     private
 
     def table_available?
@@ -203,6 +211,10 @@ module Truffler
 
       def weak_below(count)
         @definition.weak_below = Integer(count)
+      end
+
+      def invite_on_pending_encoding(enabled)
+        @definition.invite_on_pending_encoding = enabled ? true : false
       end
     end
   end

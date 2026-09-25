@@ -84,6 +84,7 @@ class Email < ApplicationRecord
     surface :inbox, explicit_action: :enter     # :enter, :key, or :row
     ranking label: 1.0, text: 1.0, keyword: 0.5, exact: 1.0
     weak_below 3                                # fewer keystroke results than this counts as weak
+    invite_on_pending_encoding true             # Smart search row while a first-time query's encoding is in flight
   end
 end
 ```
@@ -97,6 +98,7 @@ Here is what each option does:
 - `keyword` also accepts a single callable, `->(scope, tokens) { relation }`.
 - `embeddings column: :my_vector` searches a vector column you maintain yourself. Truffler never writes it.
 - `embeddings` refuses to send encrypted fields to the embedding provider unless you pass `allow_encrypted: true`.
+- `invite_on_pending_encoding` (default true) shows the Smart search row with reason `:encoding_pending` while a query's first encoding is in flight, even when a `keyword` source matched. A model with no `keyword` source always does. Pass `false` to invite only on weak or empty results.
 
 `label key, type, **options` takes:
 

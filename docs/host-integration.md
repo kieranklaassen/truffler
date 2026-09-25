@@ -21,7 +21,7 @@ The invite row's `reason` takes one of these values:
 
 - `:weak`: fewer results than the model's `weak_below` (default 3).
 - `:empty`: no results.
-- `:encoding_pending`: the model has no `keyword` source and the query has no cached encoding yet. Only Smart search can answer intent queries there, even if an `exact` source matched.
+- `:encoding_pending`: the query has no cached encoding yet. On a model with no `keyword` source this holds until the encoding lands, since only Smart search can answer intent queries there, even if an `exact` source matched. On a model with a `keyword` source it holds while the encoding is in flight (`encoding_status == :pending`), so a first-time intent query still gets the row when a blind index matched. Declare `invite_on_pending_encoding false` to invite only on `:weak` or `:empty` there. This reason alone does not make the local list weak, so it does not start the backup provider (`result.local_weak?`).
 
 ### Smart results (`run.to_h`, the `smart` prop)
 

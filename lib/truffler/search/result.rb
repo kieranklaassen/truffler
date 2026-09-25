@@ -12,7 +12,9 @@ module Truffler
 
       attr_reader :records, :query, :encoding, :encoding_status, :watermark, :explicit_action, :sources, :invite_row
 
-      def initialize(records:, query:, encoding:, encoding_status:, watermark:, explicit_action:, sources:, invite_row:, weights:, recount:)
+      def initialize(records:, query:, encoding:, encoding_status:, watermark:, explicit_action:, sources:, invite_row:, weights:, recount:,
+        local_weak: nil)
+        @local_weak = local_weak
         @records = records
         @query = query
         @encoding = encoding
@@ -27,6 +29,14 @@ module Truffler
 
       def ids
         records.map(&:id)
+      end
+
+      # Whether the local list is too weak to stand alone, which starts the
+      # backup provider on the explicit action. An `:encoding_pending` row on
+      # a model with a `keyword` source invites Smart search without making
+      # the list weak.
+      def local_weak?
+        @local_weak.nil? ? invite_row.present? : @local_weak
       end
 
       # Applied filters, then boosts, then the time range, as `{key:, label:, kind:, name:}`.

@@ -45,8 +45,8 @@ module Truffler
         sql = sql(encoding)
         records = sql.relation(scope, limit: limit).to_a
         result = Result.new(records: records, query: query, encoding: encoding, encoding_status: status, watermark: watermark,
-          explicit_action: explicit_action, sources: sql.sources, invite_row: invite_row(records, cached),
-          weights: @weights, recount: ->(since) { count(since: since) })
+          explicit_action: explicit_action, sources: sql.sources, invite_row: invite_row(records, cached, status),
+          local_weak: local_weak?(records, cached), weights: @weights, recount: ->(since) { count(since: since) })
         instrument(result, started)
         result
       end
@@ -134,18 +134,27 @@ module Truffler
         Sql.new(model, tenant_key: tenant_key, query: query, encoding: encoding, vector: read_vector, weights: @weights)
       end
 
-      # R21: the Smart search row. A model with no local text search whose
-      # encoding is not cached yet invites the action even when a blind index
-      # matched, because intent queries resolve on the action there (AE10).
-      def invite_row(records, cached)
+      # R21: the Smart search row. A query whose encoding is not cached yet
+      # invites the action even when a blind index or keyword matched,
+      # because a first-time intent query resolves on the action (AE10): on a
+      # model with no local text search always, and with a `keyword` source
+      # while the encoding is in flight unless `invite_on_pending_encoding false`.
+      def invite_row(records, cached, status)
         return if query.blank?
 
-        reason =
-          if @definition.keyword.blank? && cached.nil? then :encoding_pending
-          elsif records.empty? then :empty
-          elsif records.size < @definition.weak_below then :weak
-          end
+        pending = cached.nil? && (@definition.keyword.blank? || (@definition.invite_on_pending_encoding && status == :pending))
+        reason = pending ? :encoding_pending : weak_reason(records)
         { query: query.raw.strip, reason: reason } if reason
+      end
+
+      def weak_reason(records)
+        if records.empty? then :empty
+        elsif records.size < @definition.weak_below then :weak
+        end
+      end
+
+      def local_weak?(records, cached)
+        !query.blank? && (weak_reason(records).present? || (@definition.keyword.blank? && cached.nil?))
       end
 
       def instrument(result, started)
