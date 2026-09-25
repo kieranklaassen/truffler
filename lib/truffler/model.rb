@@ -7,8 +7,14 @@ module Truffler
     end
 
     class_methods do
-      def truffler(&block)
-        raise ArgumentError, "truffler needs a declaration block" unless block
+      # With a block, declares what truffler labels and searches. With a
+      # query, runs a keystroke search:
+      #
+      #   Email.truffler("needs action", tenant: account.id, scope: Email.all, user: current_user)
+      def truffler(query = nil, **options, &block)
+        return truffler_search(query, **options) unless block || (query.nil? && options.empty?)
+        raise ArgumentError, "truffler needs a declaration block or a query" unless block
+        raise ArgumentError, "truffler takes a declaration block or a query, not both" if query || options.any?
 
         definition = Definition.new(self)
         Definition::DSL.new(definition).instance_exec(&block)
@@ -17,6 +23,17 @@ module Truffler
         self.truffler_definition = definition
         Truffler.registry.register(self)
         definition
+      end
+
+      def truffler_search(query, tenant: nil, scope: nil, user: nil, suppressed: [], surface: nil, **options)
+        Search::Keystroke.new(self, query, tenant: tenant, scope: scope, user: user, suppressed: suppressed, surface: surface,
+          **options).call
+      end
+
+      # Records matching the same search that arrived after `since`, usually
+      # a result's watermark (R25).
+      def jev_new_matches_count(query, tenant: nil, scope: nil, since:, suppressed: [])
+        Search::Keystroke.new(self, query, tenant: tenant, scope: scope, suppressed: suppressed).count(since: since)
       end
 
       private
