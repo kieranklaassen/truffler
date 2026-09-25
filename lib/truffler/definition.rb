@@ -62,6 +62,21 @@ module Truffler
       check_embeddings if embeddings
     end
 
+    DEFAULT_RANKING = { label: 1.0, text: 1.0, keyword: 0.5, exact: 1.0, min_similarity: 0.0 }.freeze
+    DEFAULT_WEAK_BELOW = 3
+
+    attr_writer :ranking, :weak_below
+
+    # KTD20 blend weights for keystroke scoring, tuned by the benchmark (R36).
+    def ranking
+      DEFAULT_RANKING.merge(@ranking || {})
+    end
+
+    # Fewer keystroke results than this count as weak (R19, R21).
+    def weak_below
+      @weak_below || DEFAULT_WEAK_BELOW
+    end
+
     private
 
     def check_columns(names)
@@ -128,6 +143,17 @@ module Truffler
 
       def arrived_at(column)
         @definition.arrived_at_column = column.to_s
+      end
+
+      def ranking(**weights)
+        unknown = weights.keys - DEFAULT_RANKING.keys
+        raise DefinitionError, "ranking: unknown weights #{unknown.join(', ')}" if unknown.any?
+
+        @definition.ranking = weights.transform_values { |weight| Float(weight) }
+      end
+
+      def weak_below(count)
+        @definition.weak_below = Integer(count)
       end
     end
   end

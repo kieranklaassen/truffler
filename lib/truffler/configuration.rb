@@ -12,6 +12,7 @@ module Truffler
     attr_accessor :miss_retention, :miss_min_distinct_users
     attr_writer :secret_key_base
     attr_accessor :vector_store, :embedding_cost_per_million_tokens
+    attr_accessor :encoding_prefetch
 
     def initialize(env: ENV)
       @model = "jev-latest"
