@@ -1,0 +1,66 @@
+class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
+  def change
+    create_table :truffler_labels do |t|
+      t.string :record_type, null: false
+      t.<%= record_id_type %> :record_id, null: false
+      t.string :tenant_key
+      t.string :label_key, null: false
+      t.float :value, null: false
+      t.string :fingerprint, null: false
+      t.datetime :labeled_at, null: false
+    end
+    add_index :truffler_labels, [:record_type, :record_id, :label_key], unique: true,
+      name: "index_truffler_labels_on_record_and_label"
+    add_index :truffler_labels, [:record_type, :tenant_key, :label_key, :value],
+      name: "index_truffler_labels_for_search"
+
+    create_table :truffler_record_states do |t|
+      t.string :record_type, null: false
+      t.<%= record_id_type %> :record_id, null: false
+      t.string :tenant_key
+      t.string :vocabulary_version
+      t.string :status, null: false, default: "pending"
+      t.string :priority, null: false, default: "live"
+      t.integer :attempts, null: false, default: 0
+      t.string :last_error_class
+      t.datetime :claimed_at
+      t.datetime :labeled_at
+      t.string :embedding_fingerprint
+      t.datetime :embedded_at
+      t.timestamps
+    end
+    add_index :truffler_record_states, [:record_type, :record_id], unique: true,
+      name: "index_truffler_record_states_on_record"
+    add_index :truffler_record_states, [:record_type, :tenant_key, :status, :priority],
+      name: "index_truffler_record_states_for_claims"
+
+    create_table :truffler_embeddings do |t|
+      t.string :record_type, null: false
+      t.<%= record_id_type %> :record_id, null: false
+      t.string :tenant_key
+      t.string :fingerprint, null: false
+<% if vector_dimensions -%>
+      t.vector :embedding, limit: <%= vector_dimensions %>, null: false
+<% else -%>
+      t.binary :embedding, null: false
+<% end -%>
+      t.integer :dimensions, null: false
+      t.timestamps
+    end
+    add_index :truffler_embeddings, [:record_type, :record_id], unique: true,
+      name: "index_truffler_embeddings_on_record"
+    add_index :truffler_embeddings, [:record_type, :tenant_key], name: "index_truffler_embeddings_on_tenant"
+
+    create_table :truffler_query_misses do |t|
+      t.string :record_type, null: false
+      t.string :tenant_key
+      t.string :query_digest, null: false
+      t.string :user_digest
+      t.text :query_text
+      t.datetime :created_at, null: false
+    end
+    add_index :truffler_query_misses, [:record_type, :tenant_key, :created_at],
+      name: "index_truffler_query_misses_on_tenant"
+    add_index :truffler_query_misses, :created_at
+  end
+end

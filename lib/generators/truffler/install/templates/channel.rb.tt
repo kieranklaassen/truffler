@@ -1,0 +1,16 @@
+class TrufflerChannel < ApplicationCable::Channel
+  def subscribed
+    user_key = authorized_user_key
+    return reject if user_key.blank?
+
+    stream_from "truffler:#{user_key}"
+  end
+
+  private
+
+  # Must return the same user key your controllers pass to Truffler searches,
+  # or nil to reject the subscription.
+  def authorized_user_key
+    current_user&.id&.to_s
+  end
+end

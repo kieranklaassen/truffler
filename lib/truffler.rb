@@ -27,6 +27,10 @@ module Truffler
     def reset_config!
       @config = Configuration.new
     end
+
+    def registry
+      @registry ||= Registry.new
+    end
   end
 end
 
