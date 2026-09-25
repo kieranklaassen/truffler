@@ -280,4 +280,13 @@ class QueryEncodingEncoderTest < Truffler::TestCase
     assert_equal :cached, later.encoding_status
     assert_equal [ pay.id ], later.records.map(&:id)
   end
+
+  test "0.1.1: a word sharing a label's first letters names it ('urgently' names urgent), a short or unrelated word does not" do
+    @fake.answer("intent__urgent", "filter")
+
+    encoding = Encoder.new.encode(prefetch(InboxEmail, "urgently waiting on up"))
+
+    assert_equal %w[urgently], encoding.label_term_tokens
+    assert_includes encoding.keyword_tokens, "waiting"
+  end
 end

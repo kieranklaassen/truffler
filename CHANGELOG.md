@@ -4,7 +4,7 @@
 
 Fixes from the first host integration (happyhappy).
 
-- Live queries no longer return zero results next to a label filter. Query encoding sends the label vocabulary (descriptions and choice option names) in the request state; a keyword that names an applied label or its option becomes a label term and common stopwords become filler; and when a label filter applies, keyword hits only add to the score instead of being required.
+- Live queries no longer return zero results next to a label filter. Query encoding sends the label vocabulary (descriptions and choice option names) in the request state; a keyword that names an applied label or its option (including a shared first-three-letter stem, so "angry" names `anger`) becomes a label term and common stopwords become filler; and when a label filter applies, keyword hits only add to the score instead of being required.
 - Declaring `truffler` on a model whose table does not exist yet (a fresh database during `db:prepare`) no longer raises. Column checks run on the first labeling or search instead and raise `DefinitionError` then if columns are still unknown.
 - Query encoding's "no option" answer is the reserved `Truffler::NO_OPTION` (`"truffler:none"`), so a host choice option named `none` can be filtered. Host options may not use the reserved name.
 - Time phrases (`today`, `yesterday`, `this/last week`, `this/last month`, `past/last N days/weeks`, `since <weekday>`) are parsed locally, never asked of Jev or matched as keywords, and limit results on the `arrived_at` column. They show as a removable `kind: :time` chip (suppress `"time"`); keystroke search accepts a `clock:` for tests.

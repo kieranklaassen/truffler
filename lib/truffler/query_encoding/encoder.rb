@@ -13,7 +13,7 @@ module Truffler
     #
     # Jev's word roles are then reconciled locally: a keyword that names a
     # label the query applies (its key, a word of its key, or the chosen
-    # option, ignoring case and plurals) becomes a label term, and a common
+    # option, ignoring case and plurals, or sharing its first three letters) becomes a label term, and a common
     # stopword becomes filler.
     #
     # Answers become a `Search::Encoding` with the KTD20 intent vector: boost
@@ -213,14 +213,20 @@ module Truffler
 
       # "category:billing" names "category" and "billing"; "needs_action"
       # names "needs_action", "needs", and "action".
+      STEM = 3
+
       def label_terms(storage_key)
         label, option = Search::Encoding.split_key(storage_key)
         [ label.split(":").last, option ].compact.flat_map { |name| [ name.downcase, *name.downcase.split(/[^\p{Alnum}]+/) ] }
           .reject(&:empty?).map(&:singularize)
       end
 
+      # "angry" names "anger": the same word ignoring plurals, or two words of
+      # four letters or more that share their first three letters. Only the
+      # applied labels' terms are compared, so the loose match stays safe.
       def names_label?(word, terms)
-        terms.include?(word.singularize)
+        word = word.singularize
+        terms.any? { |term| term == word || (word.length > STEM && term.length > STEM && word[0, STEM] == term[0, STEM]) }
       end
 
       def intent_instructions(label)
