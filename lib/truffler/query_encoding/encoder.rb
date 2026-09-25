@@ -5,7 +5,9 @@ module Truffler
     # options plus `none`, and each of the first 12 word tokens gets
     # `keyword | label_term | filler`. Exact-text tokens (digits, dates,
     # quoted phrases, emails, identifiers) are keywords decided locally and
-    # never asked (R18).
+    # never asked (R18). Query text travels only in `state` ("query" and
+    # "tokens"); a token question names its word by position, `tokens[n]`,
+    # so searcher text never lands in an instruction (R8).
     #
     # Answers become a `Search::Encoding` with the KTD20 intent vector: boost
     # gives the declared boost, filter narrows and adds `filter_weight`
@@ -54,13 +56,13 @@ module Truffler
 
         words = query.tokens.each_with_index.reject { |token, _| query.exact_tokens.include?(token) }
         asked = words.first(MAX_TOKEN_QUESTIONS)
-        token_ids = asked.to_h do |token, position|
+        token_ids = asked.to_h do |_token, position|
           id = :"token__#{position}"
-          questions.choice(id, instructions: %(In the search query, what is the word "#{token}"?), criteria: TOKEN_ROLES)
+          questions.choice(id, instructions: %(In the search query, what is the word tokens[#{position}]?), criteria: TOKEN_ROLES)
           [ position, id.to_s ]
         end
 
-        Request.new(state: { "query" => query.normalized }, questions: questions.to_h, token_ids: token_ids,
+        Request.new(state: { "query" => query.normalized, "tokens" => query.tokens }, questions: questions.to_h, token_ids: token_ids,
           exact_tokens: query.exact_tokens, unasked_tokens: words.drop(MAX_TOKEN_QUESTIONS).map(&:first))
       end
 
