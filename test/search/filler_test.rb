@@ -70,7 +70,8 @@ class SearchFillerTest < Truffler::TestCase
     assert_equal [ customers.id ], search(InboxEmail, "customers").records.map(&:id)
     assert_equal %w[customers], encode("customers").keyword_tokens
     assert_equal [ customers.id ], search(InboxEmail, "customers").records.map(&:id)
-    assert_equal %w[the customers], encode("the customers").keyword_tokens
+    assert_equal %w[customers], encode("the customers").keyword_tokens
+    assert_equal %w[the], encode("the").keyword_tokens
   end
 
   test "0.1.4: a filler word beside an applied label is dropped" do
@@ -91,5 +92,29 @@ class SearchFillerTest < Truffler::TestCase
 
     Truffler.config.filler_words += %w[customer]
     assert_equal %w[refund], Truffler::Search::Encoding.new.keywords(Query.new("customers refund ticket"))
+  end
+
+  test "0.1.4: removing the time chip brings a dropped filler noun back, cached or cold" do
+    customers = email_at("Customers asked again", NOW - 30.days)
+    email_at("Refund issued", NOW - 30.days)
+
+    encoding = encode("customers in the last 3 hours")
+    assert_empty encoding.keyword_tokens
+    assert_includes encoding.filler_tokens, "customers"
+    assert_equal %w[customers], encoding.without([ "time" ]).keyword_tokens
+
+    cached = search(InboxEmail, "customers in the last 3 hours", suppressed: [ "time" ])
+    assert_equal [ customers.id ], cached.records.map(&:id)
+    Truffler.config.cache_store.clear
+    cold = search(InboxEmail, "customers in the last 3 hours", suppressed: [ "time" ])
+    assert_equal [ customers.id ], cold.records.map(&:id)
+  end
+
+  test "0.1.4: removing the last label chip frees its word; filler stays dropped while a real keyword remains" do
+    @fake.answer("intent__urgent", "filter")
+
+    encoding = encode("urgent messages")
+
+    assert_equal %w[urgent], encoding.without([ "urgent" ]).keyword_tokens
   end
 end

@@ -26,15 +26,19 @@ module Truffler
       end
 
       # The subset of `candidates` (droppable keywords) to drop, given how many
-      # keywords there are and whether a label or time range is applied.
-      def drop(candidates, keyword_count:, anchored:)
-        return [] if !anchored && candidates.size == keyword_count
+      # keywords there are and whether a label or time range is applied. When
+      # nothing anchors the search and only droppable words are left, the
+      # filler nouns stay as keywords and only pure stopwords go ("customers
+      # in the" searches "customers"); if every word is a stopword, all stay.
+      def drop(candidates, keyword_count:, anchored:, stopword: ->(candidate) { stopword?(candidate) })
+        return candidates if anchored || candidates.size < keyword_count
 
-        candidates
+        stopwords = candidates.select(&stopword)
+        stopwords.size == candidates.size ? [] : stopwords
       end
 
-      # `tokens` minus filler words, or all of them when nothing else would
-      # anchor the search. Exact tokens (a quoted "the") are never filler.
+      # `tokens` minus filler words, or only minus stopwords when nothing else
+      # would anchor the search. Exact tokens (a quoted "the") are never filler.
       def keywords(tokens, anchored:, exact: [])
         dropped = drop(tokens.select { |token| !exact.include?(token) && word?(token) }, keyword_count: tokens.size, anchored: anchored)
         tokens - dropped

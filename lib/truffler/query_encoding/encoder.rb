@@ -139,6 +139,7 @@ module Truffler
         Search::Encoding.new(filters: filters, boosts: boosts, intent_vector: intent,
           keyword_tokens: tokens.call(roles.keys.select { |position| roles[position] == "keyword" }),
           label_term_tokens: tokens.call(sources.keys), soft_keyword_tokens: tokens.call(soft).uniq,
+          filler_tokens: tokens.call(roles.keys.select { |position| roles[position] == "filler" }).uniq,
           label_term_sources: sources.group_by { |position, _| query.tokens[position] }.transform_values { |pairs| pairs.flat_map(&:last).uniq })
       end
 
@@ -215,7 +216,8 @@ module Truffler
         words = roles.keys.select { |position| roles[position] == "keyword" && !query.exact_tokens.include?(query.tokens[position]) }
         words.each { |position| roles[position] = "label_term" if matches[position].any? }
         filler = words.select { |position| roles[position] == "keyword" && Search::Filler.word?(query.tokens[position]) }
-        Search::Filler.drop(filler, keyword_count: roles.values.count("keyword"), anchored: names.any? || !query.time_phrase.nil?)
+        Search::Filler.drop(filler, keyword_count: roles.values.count("keyword"), anchored: names.any? || !query.time_phrase.nil?,
+          stopword: ->(position) { Search::Filler.stopword?(query.tokens[position]) })
           .each { |position| roles[position] = "filler" }
         label_terms = roles.keys.select { |position| roles[position] == "label_term" }
         sources = label_terms.to_h { |position| [ position, matches[position].keys.presence || names.keys ] }

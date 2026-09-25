@@ -18,10 +18,12 @@ module Truffler
     # - `soft_keyword_tokens`: label terms that named a label or option key
     #   only by shared prefix ("urgently" for urgent). They add a small
     #   keyword score and are never required.
+    # - `filler_tokens`: stopwords and filler words the encoder dropped.
+    #   Removing the chips that justified the drop brings filler nouns back.
     # - `time`: the query's `TimeRange`, resolved at search time and never
     #   cached, since "today" moves.
     Encoding = Data.define(:filters, :boosts, :intent_vector, :keyword_tokens, :label_term_tokens, :label_term_sources,
-      :soft_keyword_tokens, :time) do
+      :soft_keyword_tokens, :filler_tokens, :time) do
       def self.load(value, query)
         return value if value.is_a?(self)
         return if value.nil?
@@ -31,18 +33,20 @@ module Truffler
           keyword_tokens: value["keyword_positions"]&.map { |position| tokens[position] }&.compact,
           label_term_tokens: Array(value["label_term_positions"]).filter_map { |position| tokens[position] },
           label_term_sources: Array(value["label_term_sources"]).filter_map { |position, keys| [ tokens[position], keys ] if tokens[position] },
-          soft_keyword_tokens: Array(value["soft_keyword_positions"]).filter_map { |position| tokens[position] })
+          soft_keyword_tokens: Array(value["soft_keyword_positions"]).filter_map { |position| tokens[position] },
+          filler_tokens: Array(value["filler_positions"]).filter_map { |position| tokens[position] })
       end
 
       def initialize(filters: {}, boosts: {}, intent_vector: nil, keyword_tokens: nil, label_term_tokens: [], label_term_sources: {},
-        soft_keyword_tokens: [], time: nil)
+        soft_keyword_tokens: [], filler_tokens: [], time: nil)
         filters = weights(filters)
         boosts = weights(boosts)
         intent_vector = weights(intent_vector || boosts).reject { |_, weight| weight.zero? }
         sources = label_term_sources.to_h { |token, keys| [ token.to_s, Array(keys).map(&:to_s).freeze ] }
         super(filters: filters.freeze, boosts: boosts.freeze, intent_vector: intent_vector.freeze,
           keyword_tokens: keyword_tokens&.map(&:to_s)&.freeze, label_term_tokens: Array(label_term_tokens).map(&:to_s).freeze,
-          label_term_sources: sources.freeze, soft_keyword_tokens: Array(soft_keyword_tokens).map(&:to_s).freeze, time: time)
+          label_term_sources: sources.freeze, soft_keyword_tokens: Array(soft_keyword_tokens).map(&:to_s).freeze,
+          filler_tokens: Array(filler_tokens).map(&:to_s).freeze, time: time)
       end
 
       def empty?
@@ -60,9 +64,12 @@ module Truffler
         kept = { filters: filters.select(&keep), boosts: boosts.select(&keep), intent_vector: intent_vector.select(&keep) }
         applied = kept.values.flat_map(&:keys).to_set
         freed = label_term_sources.select { |_, keys| keys.any? && keys.none? { |key| applied.include?(key) } }.keys
-        with(**kept, time: (time unless suppressed.include?(TimeRange.key)), label_term_tokens: label_term_tokens - freed,
+        kept_time = (time unless suppressed.include?(TimeRange.key))
+        keywords = keyword_tokens && (keyword_tokens + freed).uniq
+        keywords = Filler.keywords(keywords + filler_tokens, anchored: false) if keywords && applied.empty? && kept_time.nil?
+        with(**kept, time: kept_time, label_term_tokens: label_term_tokens - freed,
           label_term_sources: label_term_sources.except(*freed), soft_keyword_tokens: soft_keyword_tokens - freed,
-          keyword_tokens: keyword_tokens && (keyword_tokens + freed).uniq)
+          keyword_tokens: keywords)
       end
 
       # Splits a storage key into its label key and choice option. Lens keys
@@ -94,7 +101,8 @@ module Truffler
           "label_term_sources" => query.tokens.each_index.filter_map do |position|
             [ position, label_term_sources[query.tokens[position]] ] if label_term_sources.key?(query.tokens[position])
           end,
-          "soft_keyword_positions" => positions(query, soft_keyword_tokens) }
+          "soft_keyword_positions" => positions(query, soft_keyword_tokens),
+          "filler_positions" => positions(query, filler_tokens) }
       end
 
       private
