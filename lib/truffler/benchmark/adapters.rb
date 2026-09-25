@@ -41,6 +41,7 @@ module Truffler
           def acquire(priority:, **)
             Truffler::Budget::Decision.new(:granted, priority, nil)
           end
+          alias_method :admit, :acquire
         end
 
         NoEncodings = Struct.new(:none) do

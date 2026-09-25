@@ -1,8 +1,9 @@
 module Truffler
   module SmartSearch
     # The work of `SmartSearchJob`. It hands the run to the provider backup
-    # when one is loaded (U11), then takes a rerank slot under the per-user
-    # cap; a denial pauses the run and pings (R26, AE5). Otherwise it waits
+    # when one is loaded (U11), then checks the per-user rerank cap without
+    # taking a request slot, since each chunk takes its own; a denial here or
+    # at a chunk pauses the run and pings (R26, AE5). Otherwise it waits
     # for an in-flight query encoding up to `encoding_deadline` (KTD10),
     # re-applies that encoding's filters to the snapshot, plans chunks of
     # `rerank_chunk_size`, and enqueues one `RerankChunkJob` per chunk.
@@ -23,7 +24,7 @@ module Truffler
         return unless run.status == :pending && run.model.try(:truffler_definition)
 
         start_provider(run)
-        decision = @budget.acquire(priority: :rerank, user_key: run.user_key)
+        decision = @budget.admit(priority: :rerank, user_key: run.user_key)
         if decision.denied?
           run.pause!(decision.reason)
           return

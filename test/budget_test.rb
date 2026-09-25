@@ -84,6 +84,19 @@ class BudgetTest < Truffler::TestCase
     assert_empty @clock.sleeps
   end
 
+  test "admit counts against the per-user cap without taking a request slot" do
+    budget = budget(per_minute: 60)
+    assert_equal 1, budget.ceiling(:rerank)
+
+    10.times { assert budget.admit(priority: :rerank, user_key: "ann").granted? }
+    decision = budget.admit(priority: :rerank, user_key: "ann")
+
+    assert decision.denied?
+    assert_equal :user_cap, decision.reason
+    assert budget.acquire(priority: :rerank).granted?, "admits took no per-second slot"
+    assert budget.admit(priority: :rerank, user_key: "bob").granted?
+  end
+
   test "a user over 10 reruns a minute is denied while another user is granted" do
     budget = budget()
 

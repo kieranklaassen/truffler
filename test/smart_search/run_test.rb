@@ -84,6 +84,21 @@ class SmartSearchRunTest < Truffler::TestCase
     assert_empty rerank_calls(client)
   end
 
+  test "dispatching checks the per-user cap without spending the chunk's request slot" do
+    inbox_email!(subject: "invoice")
+    Truffler.config.client = client = rerank_client({ "invoice" => 0.9 })
+    Truffler.config.requests_per_minute = 60
+    budget = Truffler::Budget.new(clock: -> { 1_000.5 })
+    assert_equal 1, budget.ceiling(:rerank)
+    run = smart(InboxEmail, "invoice")
+
+    Truffler::SmartSearch::Dispatcher.new(budget: budget, enqueue: ->(*) { }).call(run)
+    Truffler::SmartSearch::Reranker.new(budget: budget).call(run, 0)
+
+    assert_equal :complete, run.status
+    assert_equal 1, rerank_calls(client).size
+  end
+
   test "the per-user rerank cap pauses the eleventh run in a minute (R26)" do
     inbox_email!(subject: "invoice")
     Truffler.config.client = rerank_client

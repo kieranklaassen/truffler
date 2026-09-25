@@ -45,6 +45,20 @@ module Truffler
       Decision.new(:granted, priority, nil)
     end
 
+    # Counts one unit against the per-user cap for `priority` without taking
+    # a request slot, for callers that gate work but make no Jev call
+    # themselves (the Smart dispatcher; each rerank chunk acquires its own).
+    def admit(priority:, user_key:)
+      priority = priority.to_sym
+      raise ArgumentError, "priority must be one of #{PRIORITIES.join(', ')}" unless PRIORITIES.include?(priority)
+
+      cap = config.user_caps[priority]
+      return Decision.new(:granted, priority, nil) unless cap && user_key
+      return deny(priority, :user_cap, []) unless take(user_counter(priority, user_key), 1, cap)
+
+      Decision.new(:granted, priority, nil)
+    end
+
     def gem_per_minute
       (config.requests_per_minute * (1 - config.headroom)).floor
     end

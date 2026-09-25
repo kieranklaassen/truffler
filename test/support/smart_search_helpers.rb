@@ -31,6 +31,11 @@ module Truffler
         @calls << options
         Truffler::Budget::Decision.new(:denied, options[:priority], :exhausted)
       end
+
+      def admit(**options)
+        @calls << options
+        Truffler::Budget::Decision.new(:denied, options[:priority], :user_cap)
+      end
     end
 
     module SmartSearchHelpers
