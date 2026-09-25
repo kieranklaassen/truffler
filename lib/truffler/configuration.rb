@@ -9,6 +9,7 @@ module Truffler
       :max_field_chars, :request_token_budget, :max_questions_per_request, :queue_name,
       :embedder, :encryptor
     attr_writer :client, :cache_store, :logger
+    attr_accessor :vector_store, :embedding_cost_per_million_tokens
 
     def initialize(env: ENV)
       @model = "jev-latest"
@@ -26,6 +27,8 @@ module Truffler
       @request_token_budget = 48_000
       @max_questions_per_request = 200
       @queue_name = :default
+      @vector_store = :auto
+      @embedding_cost_per_million_tokens = 0.02
     end
 
     def client

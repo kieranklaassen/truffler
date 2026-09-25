@@ -38,13 +38,15 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
       t.string :record_type, null: false
       t.<%= record_id_type %> :record_id, null: false
       t.string :tenant_key
-      t.string :fingerprint, null: false
+      t.string :fingerprint
 <% if vector_dimensions -%>
-      t.vector :embedding, limit: <%= vector_dimensions %>, null: false
+      t.vector :embedding, limit: <%= vector_dimensions %>
 <% else -%>
-      t.binary :embedding, null: false
+      t.binary :embedding
 <% end -%>
-      t.integer :dimensions, null: false
+      t.integer :dimensions
+      t.binary :label_vector
+      t.string :label_vocabulary_version
       t.timestamps
     end
     add_index :truffler_embeddings, [:record_type, :record_id], unique: true,
