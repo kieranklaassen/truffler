@@ -97,7 +97,8 @@ class SearchEncodingTest < Truffler::TestCase
     assert_nil cache.read(InboxEmail, Query.new("something else"), tenant_key: "1")
   end
 
-  test "the default prefetch hook is a no-op that reports nothing in flight" do
+  test "without a prefetch hook nothing is encoded or reported in flight" do
+    Truffler.config.encoding_prefetch = nil
     assert_equal false, EncodingCache.new.prefetch(InboxEmail, Query.new("x"), tenant_key: "1", user_key: "u")
   end
 

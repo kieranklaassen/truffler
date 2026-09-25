@@ -8,8 +8,10 @@ module Truffler
     KEY = /\A[a-z][a-z0-9_]*\z/
 
     attr_reader :key, :type, :instructions, :filter_at, :boost
+    # Intent weight a filter decision adds to the KTD20 query vector (default 0).
+    attr_reader :filter_weight
 
-    def initialize(key, type, question:, criteria: nil, options: nil, legend: nil, filter_at: nil, boost: nil)
+    def initialize(key, type, question:, criteria: nil, options: nil, legend: nil, filter_at: nil, boost: nil, filter_weight: 0.0)
       @key = key.to_s
       @type = type.to_sym
       @instructions = question
@@ -18,6 +20,7 @@ module Truffler
       @legend = legend
       @filter_at = filter_at&.to_f
       @boost = boost&.to_f
+      @filter_weight = Float(filter_weight)
       validate!
     end
 

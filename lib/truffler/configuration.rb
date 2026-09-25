@@ -38,6 +38,7 @@ module Truffler
       @vector_store = :auto
       @embedding_cost_per_million_tokens = 0.02
       @lenses = Lenses::Settings.new
+      @encoding_prefetch = QueryEncoding::Prefetch.new
     end
 
     def client
