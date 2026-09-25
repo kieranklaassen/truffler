@@ -70,7 +70,7 @@ module Truffler
       # lens row.
       def page(attempted)
         pk = model.primary_key
-        scope = model.all
+        scope = definition.index_relation(model.all)
         scope = scope.where(definition.tenant_column => lens.tenant_key) if definition.scoped? && lens.tenant_key
         scope = scope.where.not(pk => attempted) if attempted.any?
         scope.where(Arel.sql(stale_sql)).reorder(definition.arrival_order).limit(batch_size).to_a

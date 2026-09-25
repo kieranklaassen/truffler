@@ -116,6 +116,34 @@ module Truffler
       @weak_below || DEFAULT_WEAK_BELOW
     end
 
+    attr_accessor :index_if, :index_scope
+
+    # config.tenant_enabled is asked only for tenant-scoped models; an
+    # unscoped model is always enabled.
+    def tenant_enabled?(tenant_key)
+      check = Truffler.config.tenant_enabled
+      return true if check.nil? || !scoped?
+
+      check.call(model, tenant_key) ? true : false
+    end
+
+    # Whether the after-commit hooks, Queue, and EmbedJob handle this record:
+    # its tenant is enabled and `index_if` (when declared) accepts it.
+    def indexable?(record)
+      tenant_enabled?(tenant_key_for(record)) && (index_if.nil? || index_if.call(record) ? true : false)
+    end
+
+    # The relation the batch paths (backfills, sweeps) page over.
+    def index_relation(relation = model.all)
+      index_scope ? index_scope.call(relation) : relation
+    end
+
+    # The tenant a backfill spend ledger row belongs to: the tenant for
+    # scoped models under backfill_spend_cap_scope :tenant, else nil (app-wide).
+    def ledger_tenant(tenant_key)
+      tenant_key if scoped? && Truffler.config.backfill_spend_cap_scope.to_sym == :tenant
+    end
+
     private
 
     def table_available?
@@ -203,6 +231,18 @@ module Truffler
 
       def weak_below(count)
         @definition.weak_below = Integer(count)
+      end
+
+      def index_if(callable)
+        raise DefinitionError, "index_if must be callable with the record" unless callable.respond_to?(:call)
+
+        @definition.index_if = callable
+      end
+
+      def index_scope(callable)
+        raise DefinitionError, "index_scope must be callable with a relation" unless callable.respond_to?(:call)
+
+        @definition.index_scope = callable
       end
     end
   end

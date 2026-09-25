@@ -2,20 +2,27 @@ module Truffler
   module Labeling
     # Relabels one model's records whose labels are missing, stale (labeled
     # under another vocabulary version), failed, or demoted to backfill
-    # priority. It walks newest-first below an id cursor, splits each page by
-    # tenant, packs batch_size records per request at backfill priority, and
-    # asks only the stale questions. Live pending rows belong to the flush job
-    # and are never touched.
+    # priority. It walks newest-first below an id cursor over the
+    # definition's index_scope (one tenant's records with `tenant_key:`),
+    # splits each page by tenant, skips disabled tenants, packs batch_size
+    # records per request at backfill priority, and asks only the stale
+    # questions. Live pending rows belong to the flush job and are never
+    # touched.
     #
     # Resumable: the cursor moves past a page only once the whole page is
     # done, and records already current are skipped, so a rerun never asks
     # Jev about them again. A spend cap stops the run before a request would
     # exceed it; host-supplied labels cost nothing, so they are still written
     # once the cap is reached. The cap counts everything spent under the
-    # model's current app-wide vocabulary version, kept in the
-    # truffler_backfill_spends ledger, so reruns and overlapping jobs share
-    # it; without that table it falls back to this run plus `spent:`. A Jev error releases the claimed rows and ends
-    # the run with `:client_error`, so the caller keeps the spend metered so far.
+    # current vocabulary version in the truffler_backfill_spends ledger, so
+    # reruns and overlapping jobs share it. Tenant-scoped models keep one
+    # ledger per tenant (backfill_spend_cap_scope :tenant, the default), so
+    # the cap applies to each tenant: a whole-model run skips a tenant at its
+    # cap, keeps labeling the others, and ends with `:spend_cap_reached`; a
+    # tenant run stops there. Unscoped models, and :app, keep one app-wide
+    # ledger. Without that table the cap falls back to this run plus
+    # `spent:`. A Jev error releases the claimed rows and ends the run with
+    # `:client_error`, so the caller keeps the spend metered so far.
     #
     # A budget denial ends the run with `:budget_denied`, unless the run
     # waits: then it backs off (see .backoff) and retries from the same
@@ -98,25 +105,31 @@ module Truffler
         new(model).status
       end
 
-      # The ledger row for the model's current vocabulary version, or nil
-      # when nothing was spent yet or the ledger table is missing.
-      def self.spend(model)
+      # The ledger row for the current vocabulary version (the tenant's, for
+      # a tenant ledger), or nil when nothing was spent yet or the ledger
+      # table is missing.
+      def self.spend(model, tenant_key: nil)
         return unless Records::BackfillSpend.available?
 
-        Records::BackfillSpend.for_model(model).find_by(vocabulary_version: ledger_version(model))
+        Records::BackfillSpend.for_ledger(model, tenant_key).find_by(vocabulary_version: ledger_version(model, tenant_key))
       end
 
       # Zeroes the current vocabulary version's ledger in place, so a chain
       # still running keeps its row and continues against the fresh total.
-      def self.reset_spend!(model)
+      # `all_tenants: true` zeroes every tenant ledger of the model.
+      def self.reset_spend!(model, tenant_key: nil, all_tenants: false)
         return unless Records::BackfillSpend.available?
 
-        Records::BackfillSpend.for_model(model).where(vocabulary_version: ledger_version(model))
-          .update_all(spent_usd: 0.0, requests: 0, updated_at: Time.current)
+        ledgers = if all_tenants && Records::BackfillSpend.tenant_ledgers?
+          Records::BackfillSpend.for_model(model).where.not(tenant_key: nil)
+        else
+          Records::BackfillSpend.for_ledger(model, tenant_key).where(vocabulary_version: ledger_version(model, tenant_key))
+        end
+        ledgers.update_all(spent_usd: 0.0, requests: 0, updated_at: Time.current)
       end
 
-      def self.ledger_version(model)
-        model.truffler_definition.vocabulary.version(all_users: true)
+      def self.ledger_version(model, tenant_key = nil)
+        model.truffler_definition.vocabulary.version(tenant_key: tenant_key, all_users: true)
       end
 
       # Seconds to wait after `denials` consecutive budget denials with no
@@ -128,9 +141,10 @@ module Truffler
 
       attr_reader :model, :batch_size, :page_size
 
-      def initialize(model, spend_cap: Truffler.config.backfill_spend_cap, batch_size: Truffler.config.batch_size,
+      def initialize(model, tenant_key: nil, spend_cap: Truffler.config.backfill_spend_cap, batch_size: Truffler.config.batch_size,
         page_size: nil, cursor: nil, spent: 0.0, client: Truffler.config.client, budget: Budget.new)
         @model = model
+        @tenant_key = tenant_key&.to_s if model.truffler_definition.scoped?
         model.truffler_definition.validate_columns!
         @batch_size = batch_size
         @page_size = page_size || batch_size * 5
@@ -140,6 +154,9 @@ module Truffler
         @client = client
         @budget = budget
         @versions = {}
+        @meters = {}
+        @enabled = {}
+        @capped = Set.new
       end
 
       # `progress` is called with the result so far and the delay before each
@@ -147,17 +164,17 @@ module Truffler
       def run(max_pages: nil, wait: false, max_duration: nil, sleeper: self.class.sleeper, clock: self.class.clock,
         progress: nil)
         @labeled = 0
-        @started_cost = meter.cost
+        @started_cost = spent_cost
         @pages = 0
         deadline = max_duration && clock.call + max_duration
         denials = 0
 
         loop do
-          before = [ @labeled, meter.requests ]
+          before = [ @labeled, requests ]
           status = sweep(max_pages, deadline, clock)
           return result(status) unless wait && status == :budget_denied
 
-          denials = 0 unless before == [ @labeled, meter.requests ]
+          denials = 0 unless before == [ @labeled, requests ]
           delay = self.class.backoff(denials, @retry_after)
           return result(:paused) if deadline && clock.call + delay > deadline
 
@@ -194,26 +211,48 @@ module Truffler
         @queue ||= Queue.new(model)
       end
 
-      # Spend carried in with `spent:` is ignored when the ledger holds it.
-      def meter
-        @meter ||= begin
-          ledger = Records::BackfillSpend.ledger(model, version_for(nil)) if Records::BackfillSpend.available?
+      # One meter per ledger: per tenant for tenant ledgers, else one for the
+      # run. Spend carried in with `spent:` is ignored when the ledger holds it.
+      def meter(tenant_key)
+        ledger_tenant = ledger_available? ? definition.ledger_tenant(tenant_key) : nil
+        @meters[ledger_tenant] ||= begin
+          ledger = Records::BackfillSpend.ledger(model, version_for(ledger_tenant), tenant_key: ledger_tenant) if ledger_available?
           SpendMeter.new(@client, cap: @spend_cap, spent: ledger ? 0.0 : @spent, ledger: ledger)
         end
+      end
+
+      def ledger_available?
+        return @ledger_available if defined?(@ledger_available)
+
+        @ledger_available = Records::BackfillSpend.available?
+      end
+
+      def requests
+        @meters.each_value.sum(&:requests)
+      end
+
+      def spent_cost
+        @meters.each_value.sum(&:cost)
       end
 
       def version_for(tenant_key)
         @versions[tenant_key] ||= definition.vocabulary.version(tenant_key: tenant_key, all_users: true)
       end
 
+      def enabled?(tenant_key)
+        @enabled.fetch(tenant_key) { @enabled[tenant_key] = definition.tenant_enabled?(tenant_key) }
+      end
+
       def result(status)
-        Result.new(status: status, labeled: @labeled, requests: meter.requests, cost: meter.cost - @started_cost,
+        Result.new(status: status, labeled: @labeled, requests: requests, cost: spent_cost - @started_cost,
           cursor: @cursor, retry_after: (@retry_after if status == :budget_denied))
       end
 
       # Walks pages below @cursor until done or stopped, returning the status.
       def sweep(max_pages, deadline, clock)
         @retry_after = nil
+        return complete if @tenant_key && !enabled?(@tenant_key)
+
         loop do
           scanned, rows = page(@cursor)
           return complete if scanned.empty?
@@ -221,6 +260,8 @@ module Truffler
 
           rows.group_by(&:last).each do |tenant_key, tenant_rows|
             tenant_rows.map(&:first).each_slice(batch_size) do |ids|
+              break if @capped.include?(tenant_key)
+
               stop = label(ids, tenant_key)
               return stop if stop
             end
@@ -234,7 +275,7 @@ module Truffler
 
       def complete
         @cursor = nil
-        :complete
+        @capped.any? ? :spend_cap_reached : :complete
       end
 
       # Returns the scanned ids (for the cursor) and the [id, tenant_key] rows
@@ -242,7 +283,8 @@ module Truffler
       # lenses) compare versions here because each tenant has its own.
       def page(cursor)
         pk = model.primary_key
-        scope = model.joins(state_join).where(needs_labeling_sql)
+        scope = definition.index_relation(model.joins(state_join).where(needs_labeling_sql))
+        scope = scope.where(definition.tenant_column => @tenant_key) if @tenant_key
         scope = scope.where(model.arel_table[pk].lt(cursor)) if cursor
         tenant = definition.scoped? ? model.arel_table[definition.tenant_column] : Arel.sql("NULL")
         plucked = scope.reorder(pk => :desc).limit(page_size)
@@ -250,7 +292,7 @@ module Truffler
 
         rows = plucked.filter_map do |id, tenant_key, status, version|
           tenant_key = tenant_key&.to_s
-          [ id, tenant_key ] unless status == "labeled" && version == version_for(tenant_key)
+          [ id, tenant_key ] unless (status == "labeled" && version == version_for(tenant_key)) || !enabled?(tenant_key)
         end
         [ plucked.map(&:first), rows ]
       end
@@ -277,16 +319,20 @@ module Truffler
 
       # Labels one tenant chunk. Returns nil when done, or the status that
       # stops the run; claimed rows that were not labeled go back to pending
-      # at backfill priority.
+      # at backfill priority. A tenant ledger at its cap only stops that
+      # tenant in a whole-model run.
       def label(ids, tenant_key)
         claimed = queue.claim_backfill(ids, tenant_key)
         return if claimed.empty?
 
         begin
-          Labeler.new(model, client: meter, budget: @budget).label(claimed, priority: :backfill)
+          Labeler.new(model, client: meter(tenant_key), budget: @budget).label(claimed, priority: :backfill)
         rescue SpendCapReached
           queue.demote(claimed)
-          return :spend_cap_reached
+          return :spend_cap_reached if @tenant_key || definition.ledger_tenant(tenant_key).nil? || !ledger_available?
+
+          @capped << tenant_key
+          return
         rescue BudgetExhausted => error
           queue.demote(claimed)
           @retry_after = error.retry_after

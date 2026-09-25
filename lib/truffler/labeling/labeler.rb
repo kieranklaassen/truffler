@@ -23,7 +23,7 @@ module Truffler
         return Result.new(labeled: 0, requests: 0, cost: 0.0, demoted: false) if states.empty?
 
         tenant_key = tenant_key_of(states)
-        records = load_records(states)
+        records = load_records(states, tenant_key)
         vocabulary = definition.vocabulary
         @labels = vocabulary.labels_for(tenant_key: tenant_key, all_users: true)
         fingerprints = vocabulary.fingerprints(tenant_key: tenant_key, all_users: true)
@@ -87,8 +87,15 @@ module Truffler
         tenants.first
       end
 
-      def load_records(states)
-        records = model.where(model.primary_key => states.map(&:record_id)).to_a
+      # Records deleted, in a disabled tenant, or outside index_scope /
+      # index_if lose their state rows instead of being labeled.
+      def load_records(states, tenant_key)
+        records = if definition.tenant_enabled?(tenant_key)
+          definition.index_relation(model.where(model.primary_key => states.map(&:record_id))).to_a
+            .select { |record| definition.index_if.nil? || definition.index_if.call(record) }
+        else
+          []
+        end
         found = records.map { |record| record.id.to_s }
         gone = states.reject { |state| found.include?(state.record_id.to_s) }
         Records::RecordState.where(id: gone.map(&:id)).delete_all if gone.any?

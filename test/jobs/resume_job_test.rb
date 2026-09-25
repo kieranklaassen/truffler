@@ -69,7 +69,7 @@ class ResumeJobTest < Truffler::TestCase
 
     ResumeJob.perform_now
 
-    assert_enqueued_with(job: Truffler::Jobs::BackfillJob, args: [ "Email" ])
+    assert_enqueued_with(job: Truffler::Jobs::BackfillJob, args: [ "Email", { tenant_key: "1" } ])
     assert_no_enqueued_jobs only: Truffler::Jobs::LabelFlushJob
   end
 

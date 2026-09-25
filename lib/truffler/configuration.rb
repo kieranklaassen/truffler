@@ -19,6 +19,10 @@ module Truffler
       :smart_run_ttl, :smart_candidate_pool, :broadcaster
     # Generic nouns that are never required keywords on their own (Search::Filler).
     attr_accessor :filler_words
+    # ->(model, tenant_key) { true/false } for tenant-scoped models; nil indexes every tenant.
+    attr_accessor :tenant_enabled
+    # :tenant (a spend ledger per tenant for scoped models) or :app (one per model).
+    attr_accessor :backfill_spend_cap_scope
 
     def initialize(env: ENV)
       @model = "jev-latest"
@@ -53,6 +57,8 @@ module Truffler
       @smart_candidate_pool = 200
       @broadcaster = nil
       @filler_words = Search::Filler::DEFAULT_WORDS.dup
+      @tenant_enabled = nil
+      @backfill_spend_cap_scope = :tenant
     end
 
     def client

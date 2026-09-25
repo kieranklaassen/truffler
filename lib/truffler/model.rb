@@ -62,6 +62,8 @@ module Truffler
     # outside the watched columns, e.g. from the job that classified it.
     def truffler_refresh_labels!
       definition = self.class.truffler_definition
+      return self unless definition.indexable?(self)
+
       tenant_key = definition.tenant_key_for(self)
       keys = definition.supplied_labels.select { |label| label.available?(tenant_key) }.map(&:key)
       Labeling::Supplied.new(self.class).write([ [ self, keys ] ], tenant_key: tenant_key) if keys.any?
@@ -72,6 +74,8 @@ module Truffler
 
     def truffler_enqueue_labeling
       definition = self.class.truffler_definition
+      return unless definition.indexable?(self)
+
       if previously_new_record?
         Labeling::Queue.new(self.class).enqueue(self)
         return
@@ -105,6 +109,7 @@ module Truffler
       definition = self.class.truffler_definition
       return unless Embeddings.managed?(definition)
       return unless previously_new_record? || saved_changes.keys.intersect?(definition.relabel_columns)
+      return unless definition.indexable?(self)
 
       Jobs::EmbedJob.perform_later(self.class.polymorphic_name, id)
     end

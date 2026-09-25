@@ -108,12 +108,15 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
 
     create_table :truffler_backfill_spends do |t|
       t.string :record_type, null: false
+      t.string :tenant_key
       t.string :vocabulary_version, null: false
       t.float :spent_usd, null: false, default: 0.0
       t.integer :requests, null: false, default: 0
       t.timestamps
     end
-    add_index :truffler_backfill_spends, [:record_type, :vocabulary_version], unique: true,
-      name: "index_truffler_backfill_spends_on_ledger"
+    add_index :truffler_backfill_spends, [:record_type, :tenant_key, :vocabulary_version], unique: true,
+      name: "index_truffler_backfill_spends_on_tenant_ledger"
+    add_index :truffler_backfill_spends, [:record_type, :vocabulary_version], unique: true, where: "tenant_key IS NULL",
+      name: "index_truffler_backfill_spends_on_app_ledger"
   end
 end

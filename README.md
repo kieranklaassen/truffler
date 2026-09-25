@@ -51,6 +51,8 @@ bin/rails db:migrate
 
 The migration creates only that table and skips it if it already exists. Until you run it, backfills log one warning and cap spend per run, as 0.1.1 did.
 
+0.1.5 adds `truffler_backfill_spends.tenant_key` for per-tenant spend ledgers. The same `truffler:upgrade` command writes that migration. Until you run it, every tenant shares the model's app-wide ledger and a warning is logged once.
+
 Truffler digests user keys and query misses with `secret_key_base`. Rails supplies it automatically; outside Rails, set `config.secret_key_base`.
 
 ## Declaring a model
@@ -341,7 +343,7 @@ Set these in `Truffler.configure do |config| ... end`.
 | `max_field_chars`, `request_token_budget`, `max_questions_per_request` | 4,000, 48,000, 200 | Request packing limits. |
 | `queue_name` | `:default` | Queue for every Truffler job. |
 | `cost_per_million_tokens` | 0.042 | Jev input price, used in usage events and estimates. |
-| `backfill_spend_cap` | 5.0 | Dollar cap on backfill spend per model and vocabulary version, shared by `BackfillJob` chains, `ResumeJob` backfills, and `truffler:backfill` runs (see Backfill). `nil` disables it; for the rake task, `SPEND_CAP=none` does. Supplied labels cost nothing and are still written once it is reached. |
+| `backfill_spend_cap` | 5.0 | Dollar cap on backfill spend per model (per tenant for tenant-scoped models; see `backfill_spend_cap_scope`) and vocabulary version, shared by `BackfillJob` chains, `ResumeJob` backfills, and `truffler:backfill` runs (see Backfill). `nil` disables it; for the rake task, `SPEND_CAP=none` does. Supplied labels cost nothing and are still written once it is reached. |
 | `resume_pending_after` | 5 minutes | How long before `ResumeJob` treats work as stuck. |
 | `embedder` | `Embeddings::RubyLLMEmbedder.new` | Any `Embeddings::Embedder` subclass. The default calls `RubyLLM.embed`, which works on ruby_llm 1.x and 2. |
 | `embedding_cost_per_million_tokens` | 0.02 | Embedding price. |
@@ -358,6 +360,8 @@ Set these in `Truffler.configure do |config| ... end`.
 | `lenses.creators`, `lenses.authorize_lens`, `lenses.proposals` | `:developers`, nil, false | Lens policy (see Lenses). |
 | `lenses.spend_cap_usd`, `lenses.sample_size`, `lenses.max_questions`, `lenses.expire_after` | 1.0, 20, 8, 30 days | Lens limits. |
 | `lenses.generator`, `lenses.drafter_model`, `lenses.user_key` | `RubyLLMGenerator`, nil, `"User:42"` style | Drafting model seam and user key mapping. |
+| `tenant_enabled` | nil (every tenant) | `->(model, tenant_key) { ... }`, asked for tenant-scoped models only. A disabled tenant is never labeled, embedded, or backfilled (see Indexing only some tenants). |
+| `backfill_spend_cap_scope` | `:tenant` | `:tenant` keeps a spend ledger per tenant for tenant-scoped models, so `backfill_spend_cap` applies to each tenant. `:app` keeps one ledger per model. Unscoped models always use one. |
 
 ## Jobs to schedule
 
@@ -396,9 +400,35 @@ truffler_expire_lenses:
 |---|---|
 | `SPEND_CAP=20` or `none` | Overrides `backfill_spend_cap` for this run. |
 | `MAX_DURATION=600` | Stops after that many seconds with `paused` and the cursor. Rerun to continue. |
-| `RESET_SPEND=1` | Zeroes the spend recorded for the current vocabulary version before starting. |
+| `RESET_SPEND=1` | Zeroes the spend recorded for the current vocabulary version before starting (every tenant's ledger when no `TENANT` is given). |
+| `TENANT=42` | Backfills only that tenant, against that tenant's ledger. `truffler:status` takes it too, to print that tenant's spend. |
 
 The spend cap holds across runs. Truffler records backfill spend per model and app-wide vocabulary version in `truffler_backfill_spends`, and reserves each request's estimate against the cap in SQL. A rerun, a `ResumeJob` backfill, and overlapping `BackfillJob` chains all draw on the same total, so together they stop at `backfill_spend_cap`. Changing the vocabulary (a reworded question, a new label, or an activated lens) starts a new total. Lens backfills are capped separately by each lens's `spend_cap_usd`. `BackfillJob` reschedules itself after a denial with the same backoff. In code, `Truffler::Labeling::Backfill.new(Email).run(wait: true, max_duration: 600)` does what the task does.
+
+For tenant-scoped models the ledger is per tenant (`backfill_spend_cap_scope :tenant`, the default), so the cap applies to each tenant. A whole-model run skips a tenant once its ledger reaches the cap, keeps labeling the others, and ends with `spend_cap_reached`. A tenant run (`TENANT=`, or `BackfillJob.perform_later("Email", tenant_key: "42")`) stops at that tenant's cap. `ResumeJob` and the flush job's over-cap demotion enqueue one `BackfillJob` per tenant.
+
+### Indexing only some tenants
+
+For a per-account rollout, or to leave some records out, declare which records Truffler indexes:
+
+```ruby
+truffler do
+  tenant :account_id
+  # ...
+  index_if ->(email) { !email.spam? }                  # single records: after-commit hooks, Queue, EmbedJob
+  index_scope ->(relation) { relation.where(spam: false) } # batch paths: backfills and sweeps
+end
+
+Truffler.configure do |config|
+  config.tenant_enabled = ->(model, tenant_key) { Account.search_enabled?(tenant_key) }
+end
+```
+
+- The after-commit label and embed hooks skip records that are not indexable: `index_if` rejects them or their tenant is disabled. No state row or job is created.
+- `Labeling::Backfill`, `Embeddings::Backfill`, and lens backfills page only over `index_scope` and skip disabled tenants. The labeler drops claimed records that are no longer indexable instead of labeling them.
+- `index_if` and `index_scope` should select the same records. Keep `index_scope` index-friendly, because backfills page over it.
+- The `ResumeJob` embedding sweep runs tenant by tenant over the enabled tenants that have records in `index_scope`. Each tenant pass is a `NOT EXISTS` anti-join limited to the sweep size, not a `NOT IN` over the table.
+- Stored labels of a tenant you disable stay in place and keep serving search. When you re-enable the tenant, run `truffler:backfill` with `TENANT=` for it.
 
 ## Privacy
 

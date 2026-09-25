@@ -13,6 +13,7 @@ class UpgradeGeneratorTest < Rails::Generators::TestCase
 
   test "0.1.2: writes a migration that adds only the backfill spend ledger" do
     run_generator
+    assert_migration "db/migrate/add_tenant_key_to_truffler_backfill_spends.rb"
 
     assert_migration "db/migrate/create_truffler_backfill_spends.rb" do |migration|
       assert_match(/create_table :truffler_backfill_spends/, migration)
@@ -36,12 +37,64 @@ class UpgradeGeneratorTest < Rails::Generators::TestCase
     assert_empty connection.tables
   end
 
+  test "0.1.5: adds tenant_key to an existing ledger, keeps its rows, and replaces the app-wide unique index" do
+    run_generator
+    Scratch.establish_connection(adapter: "sqlite3", database: ":memory:")
+    connection = Scratch.connection
+    migration.new.exec_migration(connection, :up)
+    connection.execute("INSERT INTO truffler_backfill_spends (record_type, vocabulary_version, spent_usd, requests, created_at, updated_at) " \
+      "VALUES ('Email', 'v1', 1.5, 3, '2026-01-01', '2026-01-01')")
+
+    2.times { tenant_migration.new.exec_migration(connection, :up) }
+
+    assert_includes connection.columns("truffler_backfill_spends").map(&:name), "tenant_key"
+    indexes = connection.indexes("truffler_backfill_spends").index_by(&:name)
+    assert_equal %w[index_truffler_backfill_spends_on_app_ledger index_truffler_backfill_spends_on_tenant_ledger], indexes.keys.sort
+    assert_equal %w[record_type tenant_key vocabulary_version], indexes["index_truffler_backfill_spends_on_tenant_ledger"].columns
+    assert_match(/tenant_key IS NULL/i, indexes["index_truffler_backfill_spends_on_app_ledger"].where)
+    assert_equal [ [ "Email", nil, 1.5 ] ], connection.select_rows("SELECT record_type, tenant_key, spent_usd FROM truffler_backfill_spends")
+    insert = "INSERT INTO truffler_backfill_spends (record_type, tenant_key, vocabulary_version, created_at, updated_at) " \
+      "VALUES ('Email', %s, 'v1', '2026-01-01', '2026-01-01')"
+    connection.execute(format(insert, "'1'"))
+    connection.execute(format(insert, "'2'"))
+    assert_raises(ActiveRecord::RecordNotUnique) { connection.execute(format(insert, "NULL")) }
+
+    tenant_migration.new.exec_migration(connection, :down)
+    assert_not_includes connection.columns("truffler_backfill_spends").map(&:name), "tenant_key"
+  end
+
+  test "0.1.5: the tenant_key migration is a no-op on a fresh install's ledger" do
+    run_generator
+    Scratch.establish_connection(adapter: "sqlite3", database: ":memory:")
+    connection = Scratch.connection
+    connection.create_table(:truffler_backfill_spends) do |t|
+      t.string :record_type, null: false
+      t.string :tenant_key
+      t.string :vocabulary_version, null: false
+    end
+    connection.add_index :truffler_backfill_spends, %i[record_type tenant_key vocabulary_version], unique: true,
+      name: "index_truffler_backfill_spends_on_tenant_ledger"
+    connection.add_index :truffler_backfill_spends, %i[record_type vocabulary_version], unique: true, where: "tenant_key IS NULL",
+      name: "index_truffler_backfill_spends_on_app_ledger"
+
+    assert_nothing_raised { tenant_migration.new.exec_migration(connection, :up) }
+    assert_equal 2, connection.indexes("truffler_backfill_spends").size
+  end
+
   private
 
   def migration
-    path = Dir[File.join(destination_root, "db/migrate/*_create_truffler_backfill_spends.rb")].sole
+    load_migration("create_truffler_backfill_spends", :CreateTrufflerBackfillSpends)
+  end
+
+  def tenant_migration
+    load_migration("add_tenant_key_to_truffler_backfill_spends", :AddTenantKeyToTrufflerBackfillSpends)
+  end
+
+  def load_migration(name, constant)
+    path = Dir[File.join(destination_root, "db/migrate/*_#{name}.rb")].sole
     namespace = Module.new
     namespace.module_eval(File.read(path), path)
-    namespace.const_get(:CreateTrufflerBackfillSpends)
+    namespace.const_get(constant)
   end
 end

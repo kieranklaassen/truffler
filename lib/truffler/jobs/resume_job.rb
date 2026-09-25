@@ -3,12 +3,13 @@ module Truffler
     # A periodic sweep hosts schedule (every few minutes) so labeling resumes
     # after a Jev outage or a crashed worker. It returns failed rows and rows
     # stuck in labeling to pending, reschedules a flush for tenants whose live
-    # rows have waited past `resume_pending_after`, and starts a backfill for
-    # rows waiting at backfill priority. For models with gem-managed
+    # rows have waited past `resume_pending_after`, and starts a BackfillJob
+    # per tenant with rows waiting at backfill priority. Disabled tenants
+    # (config.tenant_enabled) get neither. For models with gem-managed
     # embeddings it also enqueues up to `embedding_sweep_limit` missing or
-    # stale embeddings, at most once per `embedding_sweep_interval`, so an
-    # embedder outage cannot pile duplicate jobs onto the queue. Pass a record
-    # type to sweep one model.
+    # stale embeddings, tenant by tenant for scoped models, at most once per
+    # `embedding_sweep_interval`, so an embedder outage cannot pile duplicate
+    # jobs onto the queue. Pass a record type to sweep one model.
     class ResumeJob < ActiveJob::Base
       queue_as { Truffler.config.queue_name }
 
@@ -28,16 +29,20 @@ module Truffler
         requeued = requeue(states.where(status: "failed").or(states.where(status: "labeling").where(claimed_at: ...cutoff)))
         waiting = states.where(status: "pending").where(updated_at: ...cutoff)
 
+        definition = model.truffler_definition
         live = (requeued.select { |_, priority| priority == "live" }.map(&:first) +
-          waiting.where(priority: "live").distinct.pluck(:tenant_key)).uniq
+          waiting.where(priority: "live").distinct.pluck(:tenant_key)).uniq.select { |key| definition.tenant_enabled?(key) }
         queue = Labeling::Queue.new(model)
         live.each do |tenant_key|
           queue.clear_marker(tenant_key)
           queue.schedule(tenant_key)
         end
 
-        backfill = requeued.any? { |_, priority| priority == "backfill" } || waiting.exists?(priority: "backfill")
-        BackfillJob.perform_later(model.polymorphic_name) if backfill
+        backfill = (requeued.select { |_, priority| priority == "backfill" }.map(&:first) +
+          waiting.where(priority: "backfill").distinct.pluck(:tenant_key)).uniq
+        backfill.select { |key| definition.tenant_enabled?(key) }.each do |tenant_key|
+          BackfillJob.perform_later(model.polymorphic_name, **BackfillJob.tenant_argument(model, tenant_key))
+        end
         sweep_embeddings(model)
       end
 
@@ -47,7 +52,15 @@ module Truffler
         marker = "truffler:embedding_sweep:#{model.polymorphic_name}"
         return unless Truffler.config.cache_store.write(marker, true, unless_exist: true, expires_in: embedding_sweep_interval)
 
-        Embeddings::Backfill.new(model).enqueue(limit: embedding_sweep_limit)
+        backfill = Embeddings::Backfill.new(model)
+        return backfill.enqueue(limit: embedding_sweep_limit) unless model.truffler_definition.scoped?
+
+        remaining = embedding_sweep_limit
+        backfill.tenant_keys.each do |tenant_key|
+          break unless remaining.positive?
+
+          remaining -= backfill.enqueue(limit: remaining, tenant_key: tenant_key)
+        end
       end
 
       # Returns the distinct [tenant_key, priority] pairs it moved to pending.

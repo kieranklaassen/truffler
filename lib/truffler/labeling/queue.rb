@@ -3,6 +3,8 @@ module Truffler
     # State transitions on truffler_record_states for one model, plus the
     # deduplicated scheduling of LabelFlushJob per tenant and of BackfillJob
     # for demoted rows. Jobs carry only the record type and tenant key.
+    # Records the definition does not index (a disabled tenant, `index_if`)
+    # are never enqueued.
     class Queue
       BACKFILL_WAIT = 1.minute
 
@@ -15,6 +17,8 @@ module Truffler
       end
 
       def enqueue(record, priority: :live)
+        return unless definition.indexable?(record)
+
         tenant_key = definition.tenant_key_for(record)
         now = Time.current
         Records::RecordState.upsert(
@@ -41,13 +45,14 @@ module Truffler
         job.perform_later(record_type, tenant_key)
       end
 
-      # Starts a backfill shortly after live rows are demoted over the tenant
-      # cap. One per model per marker lifetime; ResumeJob still catches rows a
-      # dropped job leaves behind.
-      def schedule_backfill
-        return unless config.cache_store.write(backfill_marker, true, unless_exist: true, expires_in: BACKFILL_WAIT + 300)
+      # Starts a backfill of the tenant shortly after its live rows are
+      # demoted over the tenant cap. One per tenant per marker lifetime;
+      # ResumeJob still catches rows a dropped job leaves behind.
+      def schedule_backfill(tenant_key = nil)
+        return unless definition.tenant_enabled?(tenant_key)
+        return unless config.cache_store.write(backfill_marker(tenant_key), true, unless_exist: true, expires_in: BACKFILL_WAIT + 300)
 
-        Jobs::BackfillJob.set(wait: BACKFILL_WAIT).perform_later(record_type)
+        Jobs::BackfillJob.set(wait: BACKFILL_WAIT).perform_later(record_type, **Jobs::BackfillJob.tenant_argument(model, tenant_key))
       end
 
       def clear_marker(tenant_key)
@@ -118,8 +123,8 @@ module Truffler
         "truffler/flush/#{record_type}/#{tenant_key}"
       end
 
-      def backfill_marker
-        "truffler/backfill/#{record_type}"
+      def backfill_marker(tenant_key)
+        "truffler/backfill/#{record_type}/#{tenant_key}"
       end
     end
   end

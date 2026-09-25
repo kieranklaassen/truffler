@@ -3,6 +3,7 @@ module Truffler
     # Embeds one record's declared fields and stores the vector. Arguments are
     # the record type and id only. On an embedder failure nothing is written,
     # `embedded_at` stays as it was, and the job retries; labels are untouched.
+    # A record the definition no longer indexes is skipped.
     class EmbedJob < ActiveJob::Base
       queue_as { Truffler.config.queue_name }
 
@@ -17,6 +18,7 @@ module Truffler
 
         record = model.find_by(model.primary_key => record_id)
         return Records::Embedding.where(record_type: record_type, record_id: record_id).delete_all unless record
+        return unless definition.indexable?(record)
 
         settings = definition.embeddings
         fingerprint = Embeddings.fingerprint(definition)
