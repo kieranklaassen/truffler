@@ -7,7 +7,7 @@ module Truffler
       queue_as { Truffler.config.queue_name }
 
       def perform(run_id, index)
-        SmartSearch::Reranker.new.call(SmartSearch::Run.find(run_id), Integer(index))
+        SmartSearch::Reranker.new.call(SmartSearch::Run.load(run_id), Integer(index))
       end
     end
   end

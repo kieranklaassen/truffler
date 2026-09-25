@@ -17,7 +17,7 @@ class SmartProviderIntegrationTest < Truffler::TestCase
     perform_enqueued_jobs(only: Truffler::Jobs::SmartSearchJob)
     perform_enqueued_jobs(only: Truffler::Jobs::ProviderSearchJob)
 
-    section = Truffler::SmartSearch::Run.find(run.id).provider_section
+    section = Truffler::SmartSearch.find(run.id, user: "user-1", tenant: 1).provider_section
     assert_equal :results, section[:status].to_sym
     assert_equal "Gmail", section[:label]
     assert_equal [ "g-1" ], section[:results].map { |result| result[:id] || result["id"] }

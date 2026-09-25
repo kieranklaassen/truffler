@@ -23,7 +23,7 @@ module Truffler
     SECTION = :provider
     STATUSES = %i[pending results empty unavailable].freeze
 
-    mattr_accessor :run_finder, default: ->(run_id) { SmartSearch::Run.find(run_id) }
+    mattr_accessor :run_finder, default: ->(run_id) { SmartSearch::Run.load(run_id) }
 
     module_function
 

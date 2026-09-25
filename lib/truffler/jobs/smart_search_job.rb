@@ -7,7 +7,7 @@ module Truffler
       queue_as { Truffler.config.queue_name }
 
       def perform(run_id)
-        SmartSearch::Dispatcher.new.call(SmartSearch::Run.find(run_id))
+        SmartSearch::Dispatcher.new.call(SmartSearch::Run.load(run_id))
       end
     end
   end

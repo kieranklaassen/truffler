@@ -295,13 +295,41 @@ class SmartSearchRunTest < Truffler::TestCase
     run = smart(InboxEmail, "invoice")
 
     travel 16.minutes do
-      found = Truffler::SmartSearch.find(run.id)
+      found = Truffler::SmartSearch.find(run.id, user: "user-1", tenant: 1)
       assert found.expired?
       assert_equal :expired, found.status
       assert_not found.reserved?
       assert_equal 0, found.reserved_slots
       assert_nil Truffler::Jobs::SmartSearchJob.perform_now(run.id)
     end
+  end
+
+  test "find checks the run's owner: another user or tenant reads it as expired and sees nothing" do
+    inbox_email!(subject: "invoice")
+    Truffler.config.client = rerank_client({ "invoice" => 0.9 })
+    run = smart(InboxEmail, "invoice")
+    drain_jobs
+    run.provider_section = { status: :results, results: [ "g-1" ] }
+
+    assert_equal :complete, Truffler::SmartSearch.find(run.id, user: "user-1", tenant: 1).status
+
+    [ { user: "user-2", tenant: 1 }, { user: "user-1", tenant: 2 }, { user: nil, tenant: 1 } ].each do |owner|
+      found = Truffler::SmartSearch.find(run.id, **owner)
+      assert found.expired?, "#{owner} must not read the run"
+      hash = found.to_h
+      assert_equal :expired, hash[:status]
+      assert_equal [], hash[:promoted_ids]
+      assert_equal [], hash[:applied_filters]
+      assert_equal({ status: :absent }, hash[:sections][:provider])
+      assert_nil found.query
+      assert_not found.cancel!
+    end
+    assert_equal :complete, run.status
+  end
+
+  test "find requires the searcher and tenant" do
+    assert_raises(ArgumentError) { Truffler::SmartSearch.find("run-id") }
+    assert_raises(ArgumentError) { Run.find("run-id", user: "user-1") }
   end
 
   test "the surface's explicit action rides on the result and the run (R23)" do
@@ -320,7 +348,7 @@ class SmartSearchRunTest < Truffler::TestCase
     raw = Truffler.config.cache_store.read("truffler/smart/run/#{run.id}")
     assert raw["encrypted"]
     assert_not_includes Marshal.dump(raw), "landlord"
-    assert_equal "landlord rent overdue", Run.find(run.id).query
+    assert_equal "landlord rent overdue", Run.load(run.id).query
     assert_equal [ [ run.id ] ], smart_job_args
   end
 

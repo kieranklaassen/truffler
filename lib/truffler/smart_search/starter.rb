@@ -32,7 +32,7 @@ module Truffler
           surface: keystroke.surface, suppressed: @suppressed, pool_ids: pool(result, local_ids), local_ids: local_ids,
           local_weak: local_ids.size < definition.weak_below, explicit_action: result.explicit_action, store: @store)
         previous = @store.supersede(run.record_type, run.tenant_key, run.user_key, run.surface, run.id)
-        Run.find(previous, store: @store).cancel! if previous
+        Run.load(previous, store: @store).cancel! if previous
         Instrumentation.instrument(:smart_search, run_id: run.id, record_type: run.record_type, tenant_key: run.tenant_key,
           surface: run.surface, candidate_count: run.pool_ids.size, local_count: local_ids.size)
         @dispatch.call(run)

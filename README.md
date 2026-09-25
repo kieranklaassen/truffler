@@ -151,7 +151,7 @@ The keystroke list is left untouched. The job then does the following:
 
 Each chunk appends to the buckets and pings. When the searcher edits the query or accepts or removes a chip, call `Email.jev_cancel_smart_search(tenant:, user:, surface:)`.
 
-Runs live in the cache store for `smart_run_ttl`. Load one with `Truffler::SmartSearch.find(run_id)`, and check that `run.user_key == Truffler::Search::Keystroke.user_key(Current.user)` before rendering it. `run.to_h` is the whole `smart` prop: ids, scores, and states, never record data.
+Runs live in the cache store for `smart_run_ttl`. Load one with `Truffler::SmartSearch.find(run_id, user: Current.user, tenant: Current.account.id)`, passing the same `user:` and `tenant:` you gave `jev_smart_search`. A run that belongs to another searcher or tenant reads as expired, so a leaked run id shows nothing. `run.to_h` is the whole `smart` prop: ids, scores, and states, never record data.
 
 ### Pings and Inertia partial reloads
 
@@ -170,11 +170,13 @@ consumer.subscriptions.create({ channel: "TrufflerChannel" }, {
 On the server, the controller renders the run as a lazy prop, so a partial reload recomputes only that prop:
 
 ```ruby
+run = params[:run_id] && Truffler::SmartSearch.find(params[:run_id], user: Current.user, tenant: account.id)
+
 render inertia: "Emails/Index", props: {
   emails: -> { serialize(result.records) },
   chips: result.chips,
   invite_row: result.invite_row,
-  smart: -> { run&.to_h },               # run found by params[:run_id] and checked against the user
+  smart: -> { run&.to_h },
 }
 ```
 

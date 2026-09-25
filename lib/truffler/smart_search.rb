@@ -18,16 +18,17 @@ module Truffler
       Starter.new(model, query, **options).call
     end
 
-    # The run for `run_id`, or an expired run once the cache let it go.
-    def find(run_id, store: Store.new)
-      Run.find(run_id, store: store)
+    # The run for `run_id`, or an expired run once the cache let it go or
+    # when it belongs to another searcher or tenant.
+    def find(run_id, user:, tenant:, store: Store.new)
+      Run.find(run_id, user: user, tenant: tenant, store: store)
     end
 
     # Cancels the current run for (model, tenant, user, surface), as when the
     # searcher edits the query or accepts or removes a chip (R24).
     def cancel(model, tenant:, user:, surface: nil, store: Store.new)
       run_id = store.current_run_id(model.polymorphic_name, tenant&.to_s, Search::Keystroke.user_key(user), surface&.to_s)
-      run = run_id && Run.find(run_id, store: store)
+      run = run_id && Run.load(run_id, store: store)
       run&.cancel!
       run
     end

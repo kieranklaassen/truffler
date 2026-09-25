@@ -34,13 +34,24 @@ module Truffler
         run
       end
 
-      def self.find(run_id, store: Store.new)
+      # The run for `run_id` as `user` in `tenant` sees it: a run that belongs
+      # to another searcher or tenant reads as expired (R17).
+      def self.find(run_id, user:, tenant:, store: Store.new)
+        run = load(run_id, store: store)
+        owned = !run.expired? && run.user_key == Search::Keystroke.user_key(user) && run.tenant_key == tenant&.to_s
+        owned ? run : new(run_id, store: store, core: {})
+      end
+
+      # Loads a run by id with no owner check, for jobs and internal callers
+      # that hold only the run id. Never hand its result to a request.
+      def self.load(run_id, store: Store.new)
         new(run_id, store: store)
       end
 
-      def initialize(id, store: Store.new)
+      def initialize(id, store: Store.new, core: nil)
         @id = id.to_s
         @store = store
+        @core = core
       end
 
       def core
@@ -113,7 +124,7 @@ module Truffler
       end
 
       def plan
-        store.read(id, "plan")
+        store.read(id, "plan") unless expired?
       end
 
       # The candidates the rerank judges: the snapshot after the awaited
@@ -135,7 +146,7 @@ module Truffler
       end
 
       def chunk(index)
-        store.read(id, "chunk/#{index}")
+        store.read(id, "chunk/#{index}") unless expired?
       end
 
       def chunk_states
@@ -226,7 +237,7 @@ module Truffler
       # A host section's state (`{status:, ...}`, status as a symbol);
       # `{status: :absent}` until something writes it.
       def section(name)
-        state = store.read(id, "section/#{section_name(name)}") || ABSENT
+        state = (store.read(id, "section/#{section_name(name)}") unless expired?) || ABSENT
         state = state.with_indifferent_access
         state[:status] = state[:status].to_sym if state[:status].respond_to?(:to_sym)
         state

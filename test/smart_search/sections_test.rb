@@ -69,10 +69,10 @@ class SmartSearchSectionsTest < Truffler::TestCase
 
     %i[pending results empty unavailable].each do |state|
       assert run.update_section(:provider, status: state, results: state == :results ? [ 1, 2 ] : [])
-      assert_equal state, Truffler::SmartSearch.find(run.id).provider_section[:status]
+      assert_equal state, Truffler::SmartSearch.find(run.id, user: "user-1", tenant: 1).provider_section[:status]
     end
 
-    assert_equal [ 1, 2 ], Truffler::SmartSearch.find(run.id).tap { |found| found.update_section(:provider, status: :results, results: [ 1, 2 ]) }
+    assert_equal [ 1, 2 ], Truffler::SmartSearch.find(run.id, user: "user-1", tenant: 1).tap { |found| found.update_section(:provider, status: :results, results: [ 1, 2 ]) }
       .provider_section[:results]
     assert_equal %w[provider] * 5, @cable.sections
     assert_equal({ status: :results, results: [ 1, 2 ] }, run.to_h[:sections][:provider])
@@ -83,7 +83,7 @@ class SmartSearchSectionsTest < Truffler::TestCase
 
     run.provider_section = { status: :pending }
 
-    assert_equal :pending, Truffler::SmartSearch.find(run.id).provider_section[:status]
+    assert_equal :pending, Truffler::SmartSearch.find(run.id, user: "user-1", tenant: 1).provider_section[:status]
     assert_empty @cable.pings
   end
 
@@ -93,7 +93,7 @@ class SmartSearchSectionsTest < Truffler::TestCase
 
     run.cancel!
     assert_not run.update_section(:provider, status: :pending)
-    assert_not Truffler::SmartSearch.find("missing").update_section(:provider, status: :pending)
+    assert_not Truffler::SmartSearch.find("missing", user: "user-1", tenant: 1).update_section(:provider, status: :pending)
     assert_equal :absent, run.provider_section[:status]
   end
 end
