@@ -51,7 +51,7 @@ bin/rails db:migrate
 
 The migration creates only that table and skips it if it already exists. Until you run it, backfills log one warning and cap spend per run, as 0.1.1 did.
 
-0.1.5 adds `truffler_backfill_spends.tenant_key` for per-tenant spend ledgers. The same `truffler:upgrade` command writes that migration. Until you run it, every tenant shares the model's app-wide ledger and a warning is logged once.
+0.1.5 adds `truffler_backfill_spends.tenant_key` for per-tenant spend ledgers. The same `truffler:upgrade` command writes that migration. Until you run it, every tenant shares the model's app-wide ledger and a warning is logged once. Workers already running when you migrate pick up the column within a minute, without a restart.
 
 `truffler:upgrade` is safe to rerun. It skips any migration already in `db/migrate` or already applied to the database, and writes only the missing ones.
 
@@ -96,7 +96,7 @@ end
 Here is what each option does:
 
 - `filter_at` makes a label a hard filter at that probability when the query asks for it. `boost` is the label's weight when the query prefers it. `filter_weight:` (default 0) is how much intent weight a filter adds on top.
-- Choice `options:` may be a callable of the tenant key, which gives each tenant its own vocabulary. A tenant it gives no options (`{}` or nil) simply lacks the label: it is neither asked nor encoded there. The option name `truffler:none` is reserved (see `Truffler::NO_OPTION` below).
+- Choice `options:` may be a callable of the tenant key, which gives each tenant its own vocabulary. A tenant it gives no options (`{}` or nil) simply lacks the label: it is neither asked nor encoded there. The callable runs once per label and tenant for each keystroke search, query encoding, labeler batch, and Smart run step (`Truffler::Current.scope`), never shared between them. The option name `truffler:none` is reserved (see `Truffler::NO_OPTION` below).
 - An option's value may be `{ description: "...", search: "..." }` instead of a plain description, e.g. `options: { "prod-a1" => { description: "Cora, the AI email assistant that drafts replies...", search: "Cora email assistant" } }`. Jev labels records with the description; query words are matched against the short search text (else the description), and the request state's `option_names` carries it. A per-tenant callable may return the same shape. Editing a search text never stales labels or triggers a backfill; it only changes the query-encoding cache key, so queries are re-encoded.
 - `watch :column, ...` relabels every label when one of those columns changes. Saving a record only relabels on columns that changed, so a `reads` field backed by a method (a conversation built from messages, say) needs the columns it is built from in `watch`.
 - `keyword` also accepts a single callable, `->(scope, tokens) { relation }`. It, and each `exact` callable, may return an Array of ids instead of a relation, which is far faster on a large tenant (see [Keystroke search at scale](#keystroke-search-at-scale)).
@@ -203,12 +203,15 @@ Query encoding sends Jev the label vocabulary (each label's description and a ch
 
 When the searcher removes a chip, the words that named only that label (or only labels that are now all removed) become keywords again, so removing the `urgent` chip from "urgent refunds" searches for both words. A word that named a label or option key only by shared prefix ("urgently" for `urgent`) also adds a small keyword score (a quarter of the keyword weight) while its label applies, ranking records whose text contains it higher without requiring it.
 
+When a search under the encoding's filters returns nothing but would match without them, the filters relax instead of leaving an empty list. With a product filter applied, "email" can become a `Source: email` filter in a tenant with no email sources. Truffler first relaxes only the filters no record in the tenant carries at their threshold, keeping the rest (the product filter stays). If that still finds nothing, it relaxes every filter. A relaxed filter becomes a soft boost, so records that do match it still rank first, and the words it consumed become keywords again. A filter is never relaxed into "every record in the tenant": if no word comes back and there is no exact or vector match, the list stays empty. Relaxation runs one extra query, only when the result is empty. `result.relaxed_labels` lists the relaxed storage keys, and their chips keep `kind: :filter` with `relaxed: true`, so the UI can say "No email sources; showing keyword matches". Chips the searcher removed stay removed.
+
 Time phrases are handled in Ruby and never asked of Jev: `today`, `yesterday`, `this week`, `last week`, `this month`, `last month`, `past|last N hours|days|weeks|months`, `last hour`, `past hour`, `past week`, `past month`, and `since monday` through `since sunday`. "Past/last N units" is a rolling window ending now; "this/last week" and "this/last month" are calendar windows. The first one in a query limits results to records whose `arrived_at` column falls in that window, its words are not keywords, and it shows as a chip `{key: "time", label: "time", kind: :time, name: "This week"}`. Pass `"time"` in `suppressed:` to drop it. Weeks start on `Date.beginning_of_week`, and the window is computed from `Time.current` (or a `clock:` callable passed to the search, for tests).
 
 The returned `Truffler::Search::Result` exposes:
 
 - `records` and `ids`.
-- `chips`: `[{key:, label:, kind: :filter | :boost | :time, name:}]`.
+- `chips`: `[{key:, label:, kind: :filter | :boost | :time, name:}]`, plus `relaxed: true` on a filter chip that was relaxed.
+- `relaxed_labels`: storage keys of filters relaxed because they left nothing to show (empty otherwise).
 - `invite_row`: `{query:, reason: :weak | :empty | :encoding_pending}` or nil.
 - `local_weak?`: whether the list is too weak to stand alone (starts the backup provider). A pending encoding on a model with a `keyword` source invites Smart search without making the list weak.
 - `encoding_status`: `:cached`, `:pending`, or `:none`.
@@ -260,7 +263,7 @@ The keystroke list is left untouched. The job then does the following:
 
 1. Starts the provider backup, if one is declared.
 2. Takes a rerank slot under the per-user cap. If no slot is available, the run pauses.
-3. Waits up to `encoding_deadline` for an in-flight query encoding and applies its filters.
+3. Waits up to `encoding_deadline` for an in-flight query encoding and applies its filters. If they leave no candidate, they relax as on the keystroke instead of reranking an empty set. `run.relaxed_labels` and `run.to_h[:relaxed_labels]` list them.
 4. Fans out one `RerankChunkJob` per `rerank_chunk_size` candidates.
 
 Each chunk appends to the buckets and pings. When the searcher edits the query or accepts or removes a chip, call `Email.jev_cancel_smart_search(tenant:, user:, surface:)`.
@@ -395,6 +398,7 @@ Set these in `Truffler.configure do |config| ... end`.
 | `tenant_enabled` | nil (every tenant) | `->(model, tenant_key) { ... }`, asked for tenant-scoped models only. A disabled tenant is never labeled, embedded, or backfilled (see Indexing only some tenants). |
 | `backfill_spend_cap_scope` | `:tenant` | `:tenant` keeps a spend ledger per tenant for tenant-scoped models, so `backfill_spend_cap` applies to each tenant. `:app` keeps one ledger per model. Unscoped models always use one. |
 | `choice_min_probability` | 0.05 | Choice labels store a row only for options at or above this probability, plus the most likely option. A missing option reads as 0.0 in filters, boosts, label vectors, and contributions. `nil` stores every option. No migration is needed: rows written earlier stay until their record is relabeled. |
+| `skip_empty_options` | false | When true, query encoding offers Jev only the choice options the tenant has label rows for (at or above `choice_min_probability`, or above 0.0 when that is `nil`), and leaves out choice labels with none, so a query cannot filter on an option no record carries. The present-option set is part of the encoding cache key and is read through the cache store for 5 minutes (`Truffler::QueryEncoding::PresentOptions::TTL`), so keystrokes stay one query and a new option reaches encoding within 5 minutes. |
 
 ## Jobs to schedule
 
@@ -436,7 +440,7 @@ truffler_expire_lenses:
 | `RESET_SPEND=1` | Zeroes the spend recorded for the current vocabulary version before starting (every tenant's ledger when no `TENANT` is given). |
 | `TENANT=42` | Backfills only that tenant, against that tenant's ledger. `truffler:status` takes it too, to print that tenant's spend. |
 
-The spend cap holds across runs. Truffler records backfill spend per model and app-wide vocabulary version in `truffler_backfill_spends`, and reserves each request's estimate against the cap in SQL. A rerun, a `ResumeJob` backfill, and overlapping `BackfillJob` chains all draw on the same total, so together they stop at `backfill_spend_cap`. Changing the vocabulary (a reworded question, a new label, or an activated lens) starts a new total. Lens backfills are capped separately by each lens's `spend_cap_usd`. `BackfillJob` reschedules itself after a denial with the same backoff. In code, `Truffler::Labeling::Backfill.new(Email).run(wait: true, max_duration: 600)` does what the task does.
+The spend cap holds across runs. Truffler records backfill spend per model and ledger version in `truffler_backfill_spends`, and reserves each request's estimate against the cap in SQL. A rerun, a `ResumeJob` backfill, and overlapping `BackfillJob` chains all draw on the same total, so together they stop at `backfill_spend_cap`. Changing what Jev is asked (a reworded question, a new asked label, or an activated lens) starts a new total. Supplied (`from:`) labels cost nothing and never do: adding an option to a supplied choice keeps the ledger, and the next backfill rewrites only that label with no Jev call. Ledgers written before 0.1.6 keep counting. A model without supplied labels keeps the same key, and one with supplied labels has its old row taken over on the first backfill, so no spend is reset. Lens backfills are capped separately by each lens's `spend_cap_usd`. `BackfillJob` reschedules itself after a denial with the same backoff. In code, `Truffler::Labeling::Backfill.new(Email).run(wait: true, max_duration: 600)` does what the task does.
 
 For tenant-scoped models the ledger is per tenant (`backfill_spend_cap_scope :tenant`, the default), so the cap applies to each tenant. A whole-model run skips a tenant once its ledger reaches the cap, keeps labeling the others, and ends with `spend_cap_reached`. A tenant run (`TENANT=`, or `BackfillJob.perform_later("Email", tenant_key: "42")`) stops at that tenant's cap. `ResumeJob` and the flush job's over-cap demotion enqueue one `BackfillJob` per tenant.
 

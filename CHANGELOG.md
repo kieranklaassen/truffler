@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.6]
+
+A fix from happyhappy production and follow-ups from 0.1.5.
+
+- Zero-result relaxation. With a Cora product filter applied, the word "email" became a `Source: email` filter chip and results dropped from 50 to 0 because the tenant has no email sources. When a keystroke search under the encoding's filters returns nothing but would match without them, those filters now become soft boosts: they stay in the intent vector so matching records rank first, but nothing requires them. The words they consumed become keywords again. Truffler first relaxes only the filters no record in the tenant carries at their threshold and keeps the rest, then every filter if that still finds nothing. It never relaxes into "every record in the tenant" when no word, exact match, or vector match remains. The fallback costs one extra query, only on an empty result; non-empty keystrokes stay one SELECT. `Result#relaxed_labels` lists the relaxed storage keys, and their chips carry `relaxed: true`. Chips the searcher removed stay removed. Smart search candidate filtering falls back the same way instead of reranking an empty set, and records `relaxed_labels` on the run (`run.to_h`).
+- New `config.skip_empty_options` (default false). When true, query encoding offers Jev only the choice options the tenant has label rows for (at or above `choice_min_probability`) and leaves out choice labels with none. The present-option set is digested into the encoding cache key and cached for 5 minutes, so a new option reaches encoding within that TTL and keystrokes stay one SELECT.
+- `truffler:install` and `truffler:upgrade` migration templates pass rubocop-rails-omakase (`[ :a, :b ]` array brackets). A test renders every template and runs RuboCop with the omakase config on the output.
+- `Records::BackfillSpend` no longer caches a missing `truffler_backfill_spends.tenant_key` for the life of the process. On a miss it reloads the column information at most once a minute, so workers started before `db:migrate` move to tenant ledgers without a restart.
+- `Backfill.status` works with an `index_scope` that orders. It plucked distinct tenants over `index_relation` without `reorder(nil)`, which raised on Postgres (`for SELECT DISTINCT, ORDER BY expressions must appear in select list`).
+- A per-tenant choice `options:` callable runs once per label and tenant for each keystroke search, query encoding, labeler batch, and Smart run step, instead of at every vocabulary, fingerprint, and wording read. In happyhappy that was about 8 times per keystroke, and 14 per encoding and 21 per labeler batch in the test model. The new `Truffler::Current.scope` memoizes for one unit of work and clears when it ends, so nothing is shared between searches, jobs, or tenants.
+- Backfill spend ledgers key on the Jev-asked labels only (`Vocabulary#ledger_version`). Changing a supplied (`from:`) label, such as adding an option to a supplied product choice, no longer starts a fresh ledger; the backfill rewrites only that label with no Jev call and no charge. Changing an asked label still starts a new ledger. Existing ledgers keep counting: a model without supplied labels keeps the same key, and one with supplied labels has its pre-0.1.6 row taken over by the first backfill.
+
 ## [0.1.5]
 
 Fixes from the Cora integration at Postgres scale, and two from happyhappy's 0.1.4 upgrade.

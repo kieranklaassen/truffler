@@ -9,7 +9,7 @@ class CreateTrufflerBackfillSpends < ActiveRecord::Migration<%= migration_versio
       t.integer :requests, null: false, default: 0
       t.timestamps
     end
-    add_index :truffler_backfill_spends, [:record_type, :vocabulary_version], unique: true,
+    add_index :truffler_backfill_spends, [ :record_type, :vocabulary_version ], unique: true,
       name: "index_truffler_backfill_spends_on_ledger"
   end
 

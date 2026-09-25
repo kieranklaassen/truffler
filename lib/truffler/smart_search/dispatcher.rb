@@ -21,23 +21,26 @@ module Truffler
       end
 
       def call(run)
-        return unless run.status == :pending && run.model.try(:truffler_definition)
+        Current.scope do
+          return unless run.status == :pending && run.model.try(:truffler_definition)
 
-        start_provider(run)
-        decision = @budget.admit(priority: :rerank, user_key: run.user_key)
-        if decision.denied?
-          run.pause!(decision.reason)
-          return
+          start_provider(run)
+          decision = @budget.admit(priority: :rerank, user_key: run.user_key)
+          if decision.denied?
+            run.pause!(decision.reason)
+            return
+          end
+
+          encoding = await_encoding(run)
+          candidate_ids, encoding, relaxed = filter(run, encoding)
+          return if run.cancelled?
+
+          run.plan!(candidate_ids: candidate_ids, chunk_size: @config.rerank_chunk_size, filters: encoding&.filters&.keys.to_a,
+            relaxed_labels: relaxed)
+          run.chunk_count.times { |index| @enqueue.call(run, index) }
+          run.ping(SMART) if candidate_ids.empty?
+          candidate_ids
         end
-
-        encoding = await_encoding(run)
-        candidate_ids = filter(run, encoding)
-        return if run.cancelled?
-
-        run.plan!(candidate_ids: candidate_ids, chunk_size: @config.rerank_chunk_size, filters: encoding&.filters&.keys.to_a)
-        run.chunk_count.times { |index| @enqueue.call(run, index) }
-        run.ping(SMART) if candidate_ids.empty?
-        candidate_ids
       end
 
       private
@@ -67,21 +70,30 @@ module Truffler
         encoding&.without(run.suppressed, keep_words: -> { Search::Filler.label_words(model.truffler_definition, run.tenant_key) })
       end
 
-      # The snapshot narrowed to what the encoding allows, in the tenant, in
-      # the keystroke ranking the encoding gives (or snapshot order without
-      # one), capped at `rerank_depth`.
+      # `[candidate_ids, encoding, relaxed_labels]`: the snapshot narrowed to
+      # what the encoding allows, in the tenant, in the keystroke ranking the
+      # encoding gives (or snapshot order without one), capped at
+      # `rerank_depth`. When the filters leave nothing, they relax as on the
+      # keystroke (Search::Relaxation) rather than rerank an empty set.
       def filter(run, encoding)
         model = run.model
         pool = model.where(model.primary_key => run.pool_ids)
-        sql = Search::Sql.new(model, tenant_key: run.tenant_key, query: run.search_query, encoding: encoding)
-        allowed = sql.base(pool).pluck(model.primary_key)
+        sql = ->(for_encoding) { Search::Sql.new(model, tenant_key: run.tenant_key, query: run.search_query, encoding: for_encoding) }
         ids = if encoding.nil? || encoding.empty?
-          run.pool_ids & allowed
+          run.pool_ids & sql.call(encoding).base(pool).pluck(model.primary_key)
         else
-          ranked = sql.relation(pool).map(&:id)
-          ranked + ((run.pool_ids & allowed) - ranked)
+          ranked(run, pool, sql.call(encoding).relation(pool).map(&:id), sql.call(encoding))
         end
-        ids.first(@config.rerank_depth)
+        relaxed = (Search::Relaxation.new(model, encoding, sql: sql).call(pool) if ids.empty? && encoding&.filters&.any?)
+        if relaxed
+          encoding = relaxed.encoding
+          ids = ranked(run, pool, relaxed.records.map(&:id), sql.call(encoding))
+        end
+        [ ids.first(@config.rerank_depth), encoding, relaxed&.relaxed_labels.to_a ]
+      end
+
+      def ranked(run, pool, ranked_ids, sql)
+        ranked_ids + ((run.pool_ids & sql.base(pool).pluck(run.model.primary_key)) - ranked_ids)
       end
     end
   end

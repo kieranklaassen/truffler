@@ -131,7 +131,10 @@ module Truffler
     private
 
     def option_entries(tenant_key)
-      options = per_tenant? ? @options.call(tenant_key) : @options
+      per_tenant? ? Current.options(self, tenant_key) { build_option_entries(@options.call(tenant_key)).freeze } : build_option_entries(@options)
+    end
+
+    def build_option_entries(options)
       options = Array(options).to_h { |option| [ option, nil ] } unless options.is_a?(Hash)
       options = options.to_h { |option, value| [ option.to_s, option_entry(option, value) ] }
       raise DefinitionError, "#{key}: the option name #{NO_OPTION} is reserved" if options.key?(NO_OPTION)

@@ -82,6 +82,22 @@ module Truffler
         @keywords ||= encoding.keywords(query, keep: -> { Filler.label_words(definition, tenant_key) })
       end
 
+      # Whether any record in the tenant carries `key` at or above `threshold`.
+      def label_present_sql(key, threshold)
+        tenant = definition.scoped? ? " AND #{label_column('tenant_key')} = #{quote(tenant_key)}" : ""
+        "EXISTS (SELECT 1 FROM #{quoted_labels} WHERE #{label_column('record_type')} = #{quote(model.polymorphic_name)}#{tenant} " \
+          "AND #{label_column('label_key')} = #{quote(key)} AND #{label_column('value')} >= #{Float(threshold)})"
+      end
+
+      def score_column_names
+        score_columns.keys
+      end
+
+      # Every record past the tenant, time, and filters is a candidate.
+      def every_base_record?
+        label_only? || encoding.filters.any?
+      end
+
       private
 
       def definition
@@ -134,11 +150,6 @@ module Truffler
 
       def label_keys_sql
         "#{label_column('label_key')} IN (#{encoding.intent_vector.keys.map { |key| quote(key) }.join(', ')})"
-      end
-
-      # Every record past the tenant, time, and filters is a candidate.
-      def every_base_record?
-        label_only? || encoding.filters.any?
       end
 
       def grouped_label_scores?

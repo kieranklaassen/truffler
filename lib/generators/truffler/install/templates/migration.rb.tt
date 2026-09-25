@@ -9,9 +9,9 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
       t.string :fingerprint, null: false
       t.datetime :labeled_at, null: false
     end
-    add_index :truffler_labels, [:record_type, :record_id, :label_key], unique: true,
+    add_index :truffler_labels, [ :record_type, :record_id, :label_key ], unique: true,
       name: "index_truffler_labels_on_record_and_label"
-    add_index :truffler_labels, [:record_type, :tenant_key, :label_key, :value], include: [:record_id],
+    add_index :truffler_labels, [ :record_type, :tenant_key, :label_key, :value ], include: [ :record_id ],
       name: "index_truffler_labels_for_search"
 
     create_table :truffler_record_states do |t|
@@ -29,9 +29,9 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
       t.datetime :embedded_at
       t.timestamps
     end
-    add_index :truffler_record_states, [:record_type, :record_id], unique: true,
+    add_index :truffler_record_states, [ :record_type, :record_id ], unique: true,
       name: "index_truffler_record_states_on_record"
-    add_index :truffler_record_states, [:record_type, :tenant_key, :status, :priority],
+    add_index :truffler_record_states, [ :record_type, :tenant_key, :status, :priority ],
       name: "index_truffler_record_states_for_claims"
 
     create_table :truffler_embeddings do |t|
@@ -49,9 +49,9 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
       t.string :label_vocabulary_version
       t.timestamps
     end
-    add_index :truffler_embeddings, [:record_type, :record_id], unique: true,
+    add_index :truffler_embeddings, [ :record_type, :record_id ], unique: true,
       name: "index_truffler_embeddings_on_record"
-    add_index :truffler_embeddings, [:record_type, :tenant_key], name: "index_truffler_embeddings_on_tenant"
+    add_index :truffler_embeddings, [ :record_type, :tenant_key ], name: "index_truffler_embeddings_on_tenant"
 
     create_table :truffler_query_misses do |t|
       t.string :record_type, null: false
@@ -61,7 +61,7 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
       t.text :query_text
       t.datetime :created_at, null: false
     end
-    add_index :truffler_query_misses, [:record_type, :tenant_key, :created_at],
+    add_index :truffler_query_misses, [ :record_type, :tenant_key, :created_at ],
       name: "index_truffler_query_misses_on_tenant"
     add_index :truffler_query_misses, :created_at
 
@@ -86,7 +86,7 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
       t.datetime :last_used_at
       t.timestamps
     end
-    add_index :truffler_lenses, [:record_type, :status, :scope_type, :tenant_key],
+    add_index :truffler_lenses, [ :record_type, :status, :scope_type, :tenant_key ],
       name: "index_truffler_lenses_for_visibility"
 
     create_table :truffler_lens_versions do |t|
@@ -103,7 +103,7 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
       t.datetime :activated_at
       t.datetime :created_at, null: false
     end
-    add_index :truffler_lens_versions, [:lens_id, :number], unique: true,
+    add_index :truffler_lens_versions, [ :lens_id, :number ], unique: true,
       name: "index_truffler_lens_versions_on_lens_and_number"
 
     create_table :truffler_backfill_spends do |t|
@@ -114,9 +114,9 @@ class CreateTrufflerTables < ActiveRecord::Migration<%= migration_version %>
       t.integer :requests, null: false, default: 0
       t.timestamps
     end
-    add_index :truffler_backfill_spends, [:record_type, :tenant_key, :vocabulary_version], unique: true,
+    add_index :truffler_backfill_spends, [ :record_type, :tenant_key, :vocabulary_version ], unique: true,
       name: "index_truffler_backfill_spends_on_tenant_ledger"
-    add_index :truffler_backfill_spends, [:record_type, :vocabulary_version], unique: true, where: "tenant_key IS NULL",
+    add_index :truffler_backfill_spends, [ :record_type, :vocabulary_version ], unique: true, where: "tenant_key IS NULL",
       name: "index_truffler_backfill_spends_on_app_ledger"
   end
 end

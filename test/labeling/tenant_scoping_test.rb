@@ -226,6 +226,43 @@ class TenantScopingTest < Truffler::TestCase
     assert_equal :complete, Backfill.new(Email, tenant_key: "1", spend_cap: cap).run.status
   end
 
+  test "0.1.6: a worker started before db:migrate moves to tenant ledgers within a minute of tenant_key appearing, without a restart" do
+    connection = Spend.connection
+    connection.create_table(:legacy_backfill_spends, force: true) do |t|
+      t.string :record_type, null: false
+      t.string :vocabulary_version, null: false
+      t.float :spent_usd, null: false, default: 0.0
+      t.integer :requests, null: false, default: 0
+      t.timestamps
+    end
+    connection.add_index :legacy_backfill_spends, [ :record_type, :vocabulary_version ], unique: true, name: "index_legacy_spends_app"
+    Spend.table_name = "legacy_backfill_spends"
+    Spend.instance_variable_set(:@tenant_key_checked_at, nil)
+    create_email(account_id: 1)
+    hide_states
+    Backfill.new(Email, tenant_key: "1").run
+    assert_not Spend.tenant_ledgers?
+
+    connection.add_column :legacy_backfill_spends, :tenant_key, :string
+    connection.remove_index :legacy_backfill_spends, name: "index_legacy_spends_app"
+    connection.add_index :legacy_backfill_spends, [ :record_type, :tenant_key, :vocabulary_version ], unique: true,
+      name: "index_legacy_spends_tenant"
+    assert_not Spend.tenant_ledgers?
+
+    travel 61.seconds do
+      create_email(account_id: 1)
+      hide_states
+      Backfill.new(Email, tenant_key: "1").run
+
+      assert Spend.tenant_ledgers?
+      assert_equal [ [ nil, 1 ], [ "1", 1 ] ], Spend.order(:id).pluck(:tenant_key, :requests)
+    end
+  ensure
+    Spend.table_name = "truffler_backfill_spends"
+    Spend.instance_variable_set(:@tenant_key_checked_at, nil)
+    Spend.connection.drop_table(:legacy_backfill_spends, if_exists: true)
+  end
+
   test "backfill_spend_cap_scope :app keeps one app-wide ledger for a scoped model" do
     Truffler.config.backfill_spend_cap_scope = :app
     create_email(account_id: 1)
@@ -305,6 +342,31 @@ class TenantScopingTest < Truffler::TestCase
     assert_equal 0, status[:missing]
     assert_equal 1, status[:current]
     assert_equal 1, Backfill.status(TenantNote, tenant_key: "1")[:total]
+  end
+
+  test "0.1.6: status and backfill work with an index_scope that orders (SELECT DISTINCT on Postgres)" do
+    ordered = Class.new(ActiveRecord::Base) do
+      self.table_name = "tenant_notes"
+      def self.name = "OrderedTenantNote"
+      include Truffler::Model
+      truffler do
+        tenant :account_id
+        reads :title
+        label :spam, :noul, question: "Is this note spam?"
+        index_scope ->(relation) { relation.where(archived: false).order(:title) }
+      end
+    end
+    Truffler.config.client = Truffler::Clients::Fake.new.answer(:spam, 0.1)
+    ordered.create!(account_id: 1, title: "B")
+    ordered.create!(account_id: 2, title: "A")
+    hide_states
+    disable_tenant("2")
+
+    Backfill.new(ordered).run
+    status = Backfill.status(ordered)
+
+    assert_equal 1, status[:total]
+    assert_equal 1, status[:current]
   end
 
   test "0.1.5: status ignores state rows left by records that moved out of index_scope (Bugbot)" do

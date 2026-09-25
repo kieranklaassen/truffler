@@ -145,6 +145,12 @@ module Truffler
         Array(plan&.fetch("filters", nil))
       end
 
+      # Filters the awaited encoding applied that were relaxed because they
+      # left no candidate (see Search::Relaxation).
+      def relaxed_labels
+        Array(plan&.fetch("relaxed_labels", nil))
+      end
+
       def chunk(index)
         store.read(id, "chunk/#{index}") unless expired?
       end
@@ -212,9 +218,10 @@ module Truffler
         true
       end
 
-      def plan!(candidate_ids:, chunk_size:, filters:)
+      def plan!(candidate_ids:, chunk_size:, filters:, relaxed_labels: [])
         store.write(id, "plan", { "candidate_ids" => candidate_ids, "chunks" => candidate_ids.each_slice(chunk_size).to_a,
-          "filters" => filters, "thresholds" => Truffler.config.smart_thresholds.transform_keys(&:to_s) })
+          "filters" => filters, "relaxed_labels" => relaxed_labels,
+          "thresholds" => Truffler.config.smart_thresholds.transform_keys(&:to_s) })
       end
 
       # Appends one chunk's `[[id, score], ...]`, sorted by score within the
@@ -281,7 +288,7 @@ module Truffler
           explicit_action: explicit_action, buckets: found, pending: BUCKETS.index_with { active? },
           collapsed: collapsed_by_default, no_strong_matches: current == :complete && found[:strong].empty?,
           promoted_ids: (found[:strong] + found[:possible]).map { |entry| entry[:id] }, applied_filters: applied_filters,
-          sections: { provider: provider_section.to_h.symbolize_keys } }
+          relaxed_labels: relaxed_labels, sections: { provider: provider_section.to_h.symbolize_keys } }
       end
 
       def as_json(*)
