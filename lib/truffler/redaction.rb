@@ -6,7 +6,7 @@ module Truffler
   module Redaction
     KEYS = %i[
       priority model cost input_tokens tokens_estimated latency_ms error_class status outcome reason
-      record_type tenant_key user_key surface section sources vocabulary_version
+      record_type tenant_key user_key surface section sources vocabulary_version label_key
     ].to_set.freeze
     SUFFIXES = %w[_id _ids _count _digest _ms].freeze
 

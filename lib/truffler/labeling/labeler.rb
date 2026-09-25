@@ -4,7 +4,9 @@ module Truffler
     # that are missing or whose fingerprint is stale, packs records into as
     # few requests as the budget allows, stores each answer as numeric label
     # rows, and marks states labeled as each request lands, so a failure
-    # partway leaves finished records finished.
+    # partway leaves finished records finished. Stale host-supplied labels
+    # are written first, before any budget slot or Jev call, so a Jev outage
+    # or denial never holds them back.
     class Labeler
       Result = Data.define(:labeled, :requests, :cost, :demoted)
 
@@ -29,10 +31,12 @@ module Truffler
 
         stored = stored_fingerprints(records)
         askable = askable_labels
-        pending = records.map { |record| [ record, stale_keys(stored[record.id.to_s].to_h, fingerprints, tenant_key, askable) ] }
-        current, pending = pending.partition { |_, keys| keys.empty? }
+        stale = records.map { |record| [ record, stale_keys(stored[record.id.to_s].to_h, fingerprints, tenant_key, askable) ] }
+        supplied = askable.select(&:supplied?).map(&:key)
+        written = Supplied.new(model).write(stale.map { |record, keys| [ record, keys & supplied ] }, tenant_key: tenant_key)
+        current, pending = stale.map { |record, keys| [ record, keys - supplied ] }.partition { |_, keys| keys.empty? }
         Records::RecordState.mark_labeled(current.map { |record, _| states_by_id[record.id.to_s].id }, version: version)
-        Embeddings::LabelVector.new(model).write(current.map { |record, _| record.id }, tenant_key: tenant_key)
+        Embeddings::LabelVector.new(model).write(current.map { |record, _| record.id } - written, tenant_key: tenant_key)
 
         requests = RequestBuilder.new(definition, tenant_key: tenant_key, labels: @labels).build(pending)
         cost = 0.0

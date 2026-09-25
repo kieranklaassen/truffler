@@ -171,7 +171,7 @@ module Truffler
       end
 
       def intent_instructions(label)
-        %(How does the search query use the label "#{label.key}" (#{label.instructions})?)
+        %(How does the search query use the label "#{label.key}" (#{label.description})?)
       end
 
       def instrument(model, tenant_key, started, **payload)

@@ -57,21 +57,43 @@ module Truffler
       end
     end
 
+    # Rewrites this record's host-supplied labels (`label ..., from:`) now,
+    # without Jev. Call it when the host's own classifier updates answers
+    # outside the watched columns, e.g. from the job that classified it.
+    def truffler_refresh_labels!
+      definition = self.class.truffler_definition
+      keys = definition.supplied_labels.map(&:key)
+      Labeling::Supplied.new(self.class).write([ [ self, keys ] ], tenant_key: definition.tenant_key_for(self)) if keys.any?
+      self
+    end
+
     private
 
     def truffler_enqueue_labeling
       definition = self.class.truffler_definition
-      watched = [ *definition.fields, definition.tenant_column ].compact
-      return unless previously_new_record? || saved_changes.keys.intersect?(watched)
+      if previously_new_record?
+        Labeling::Queue.new(self.class).enqueue(self)
+        return
+      end
 
-      truffler_expire_labels unless previously_new_record?
+      changed = saved_changes.keys
+      if changed.intersect?([ *definition.fields, definition.tenant_column ].compact)
+        truffler_expire_labels
+      else
+        watched = definition.supplied_labels.select { |label| changed.intersect?(label.watch) }
+        return if watched.empty?
+
+        truffler_expire_labels(watched.map(&:key))
+      end
       Labeling::Queue.new(self.class).enqueue(self)
     end
 
     # Stored values keep serving search until the relabel lands; clearing the
-    # fingerprints is what makes the labeler ask every question again.
-    def truffler_expire_labels
-      Records::Label.where(record_type: self.class.polymorphic_name, record_id: id).update_all(fingerprint: "")
+    # fingerprints is what makes the labeler write or ask them again.
+    def truffler_expire_labels(keys = nil)
+      rows = Records::Label.where(record_type: self.class.polymorphic_name, record_id: id)
+      rows = rows.merge(keys.map { |key| Records::Label.for_label(key) }.reduce(:or)) if keys
+      rows.update_all(fingerprint: "")
     end
 
     def truffler_forget

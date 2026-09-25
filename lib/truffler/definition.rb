@@ -35,6 +35,10 @@ module Truffler
       tenant_column.present?
     end
 
+    def supplied_labels
+      labels.values.select(&:supplied?)
+    end
+
     def per_tenant_vocabulary?
       labels.each_value.any?(&:per_tenant?)
     end
@@ -70,7 +74,7 @@ module Truffler
     def validate!
       raise DefinitionError, "#{model.name}: declare the fields Jev reads with `reads`" if fields.empty?
 
-      check_columns([ tenant_column, *fields, *Array(keyword).grep(String) ].compact)
+      check_columns([ tenant_column, *fields, *Array(keyword).grep(String), *supplied_labels.flat_map(&:watch) ].compact.uniq)
       check_embeddings if embeddings
     end
 

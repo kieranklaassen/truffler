@@ -10,8 +10,9 @@ module Truffler
     # Resumable: the cursor moves past a page only once the whole page is
     # done, and records already current are skipped, so a rerun never asks
     # Jev about them again. A spend cap stops the run before a request would
-    # exceed it. A Jev error releases the claimed rows and ends the run with
-    # `:client_error`, so the caller keeps the spend metered so far.
+    # exceed it; host-supplied labels cost nothing, so they are still written
+    # once the cap is reached. A Jev error releases the claimed rows and ends
+    # the run with `:client_error`, so the caller keeps the spend metered so far.
     class Backfill
       Result = Data.define(:status, :labeled, :requests, :cost, :cursor)
 
@@ -39,10 +40,6 @@ module Truffler
           @requests += 1
           @spent += answers.usage&.cost.to_f
           answers
-        end
-
-        def exhausted?
-          @cap.present? && @spent >= @cap
         end
 
         private
@@ -82,8 +79,6 @@ module Truffler
 
           rows.group_by(&:last).each do |tenant_key, tenant_rows|
             tenant_rows.map(&:first).each_slice(batch_size) do |ids|
-              return result(:spend_cap_reached, cursor) if @meter.exhausted?
-
               stop = label(ids, tenant_key)
               return result(stop, cursor) if stop
             end
