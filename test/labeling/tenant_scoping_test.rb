@@ -226,6 +226,43 @@ class TenantScopingTest < Truffler::TestCase
     assert_equal :complete, Backfill.new(Email, tenant_key: "1", spend_cap: cap).run.status
   end
 
+  test "0.1.6: a worker started before db:migrate moves to tenant ledgers within a minute of tenant_key appearing, without a restart" do
+    connection = Spend.connection
+    connection.create_table(:legacy_backfill_spends, force: true) do |t|
+      t.string :record_type, null: false
+      t.string :vocabulary_version, null: false
+      t.float :spent_usd, null: false, default: 0.0
+      t.integer :requests, null: false, default: 0
+      t.timestamps
+    end
+    connection.add_index :legacy_backfill_spends, [ :record_type, :vocabulary_version ], unique: true, name: "index_legacy_spends_app"
+    Spend.table_name = "legacy_backfill_spends"
+    Spend.instance_variable_set(:@tenant_key_checked_at, nil)
+    create_email(account_id: 1)
+    hide_states
+    Backfill.new(Email, tenant_key: "1").run
+    assert_not Spend.tenant_ledgers?
+
+    connection.add_column :legacy_backfill_spends, :tenant_key, :string
+    connection.remove_index :legacy_backfill_spends, name: "index_legacy_spends_app"
+    connection.add_index :legacy_backfill_spends, [ :record_type, :tenant_key, :vocabulary_version ], unique: true,
+      name: "index_legacy_spends_tenant"
+    assert_not Spend.tenant_ledgers?
+
+    travel 61.seconds do
+      create_email(account_id: 1)
+      hide_states
+      Backfill.new(Email, tenant_key: "1").run
+
+      assert Spend.tenant_ledgers?
+      assert_equal [ [ nil, 1 ], [ "1", 1 ] ], Spend.order(:id).pluck(:tenant_key, :requests)
+    end
+  ensure
+    Spend.table_name = "truffler_backfill_spends"
+    Spend.instance_variable_set(:@tenant_key_checked_at, nil)
+    Spend.connection.drop_table(:legacy_backfill_spends, if_exists: true)
+  end
+
   test "backfill_spend_cap_scope :app keeps one app-wide ledger for a scoped model" do
     Truffler.config.backfill_spend_cap_scope = :app
     create_email(account_id: 1)

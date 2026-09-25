@@ -6,6 +6,7 @@ module Truffler
     # settled in SQL, never read, added to, and written back.
     class BackfillSpend < ActiveRecord::Base
       self.table_name = "truffler_backfill_spends"
+      TENANT_KEY_RECHECK = 1.minute
 
       scope :for_model, ->(model) { where(record_type: model.polymorphic_name) }
 
@@ -30,12 +31,29 @@ module Truffler
         create_or_find_by!(attributes)
       end
 
+      # A worker booted before `db:migrate` added tenant_key has the old
+      # columns cached, so a miss reloads them at most once per
+      # TENANT_KEY_RECHECK and the worker moves to tenant ledgers without a
+      # restart.
       def self.tenant_ledgers?
         return true if column_names.include?("tenant_key")
 
+        if recheck_tenant_key?
+          reset_column_information
+          return true if column_names.include?("tenant_key")
+        end
         warn_missing_tenant_key
         false
       end
+
+      def self.recheck_tenant_key?
+        now = Time.current
+        return false if @tenant_key_checked_at && now - @tenant_key_checked_at < TENANT_KEY_RECHECK
+
+        @tenant_key_checked_at = now
+        true
+      end
+      private_class_method :recheck_tenant_key?
 
       def self.warn_missing_tenant_key
         return if @missing_tenant_warned
