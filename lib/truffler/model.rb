@@ -32,8 +32,8 @@ module Truffler
 
       # Records matching the same search that arrived after `since`, usually
       # a result's watermark (R25).
-      def jev_new_matches_count(query, tenant: nil, scope: nil, since:, suppressed: [])
-        Search::Keystroke.new(self, query, tenant: tenant, scope: scope, suppressed: suppressed).count(since: since)
+      def jev_new_matches_count(query, tenant: nil, scope: nil, user: nil, since:, suppressed: [])
+        Search::Keystroke.new(self, query, tenant: tenant, scope: scope, user: user, suppressed: suppressed).count(since: since)
       end
 
       # The explicit action (R22): starts a Smart run and returns it,

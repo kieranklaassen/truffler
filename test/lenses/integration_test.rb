@@ -249,4 +249,39 @@ class LensIntegrationTest < Truffler::TestCase
     encoding = encoder.encoding_for(FeedMessage, request, answers, tenant_key: "1")
     assert_equal [ "#{key}:dutch" ], encoding.intent_vector.keys
   end
+
+  test "a Smart run finds the searcher's personal-lens encoding and applies its filter" do
+    Truffler.config.lenses.creators = :each_user
+    Truffler.config.lenses.authorize_lens = ->(_user, _scope) { true }
+    Truffler.config.encoding_deadline = 0
+    alice = member(2)
+    lens = dutch_lens(scope: Scope.user("1", alice.id), by: alice)
+    answer_lens_language(lens)
+    feed_message("Hallo", at: 2.hours.ago)
+    feed_message("Hello", at: 1.hour.ago)
+    label_claimed
+    key = "lens:#{lens.id}:language:dutch"
+    encoding = Truffler::Search::Encoding.new(filters: { key => 0.5 }, keyword_tokens: [])
+    Truffler::Search::EncodingCache.new.write(FeedMessage, "dutch messages", encoding, tenant_key: "1", user_key: "2")
+
+    run = FeedMessage.jev_smart_search("dutch messages", tenant: 1, scope: FeedMessage.all, user: "2")
+    perform_enqueued_jobs(only: Truffler::Jobs::SmartSearchJob)
+
+    applied = Truffler::SmartSearch::Run.load(run.id).applied_filters
+    assert_includes applied.map { |filter| filter.is_a?(Hash) ? (filter[:key] || filter["key"]) : filter }.flatten.map(&:to_s), key
+  end
+
+  test "lens chips keep the lens label and removing one lens chip keeps the others" do
+    split = Truffler::Search::Encoding.split_key("lens:42:language:dutch")
+    assert_equal [ "lens:42:language", "dutch" ], split
+    assert_equal [ "category", "billing" ], Truffler::Search::Encoding.split_key("category:billing")
+    assert_equal [ "urgent" ], Truffler::Search::Encoding.split_key("urgent")
+
+    encoding = Truffler::Search::Encoding.new(filters: { "lens:42:language:dutch" => 0.5, "lens:7:tone:warm" => 0.5 }, keyword_tokens: [])
+    assert_equal [ "lens:7:tone:warm" ], encoding.without([ "lens:42:language" ]).filters.keys
+
+    chip = Truffler::Search::Result.allocate.send(:chip, "lens:42:language:dutch", :filter)
+    assert_equal "lens:42:language", chip[:label]
+    assert_equal "Language: dutch", chip[:name]
+  end
 end

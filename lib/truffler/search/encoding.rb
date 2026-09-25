@@ -41,8 +41,20 @@ module Truffler
         suppressed = Array(suppressed).map(&:to_s).to_set
         return self if suppressed.empty?
 
-        keep = ->(key, _) { !suppressed.include?(key) && !suppressed.include?(key.split(":").first) }
+        keep = ->(key, _) { !suppressed.include?(key) && !suppressed.include?(self.class.split_key(key).first) }
         with(filters: filters.select(&keep), boosts: boosts.select(&keep), intent_vector: intent_vector.select(&keep))
+      end
+
+      # Splits a storage key into its label key and choice option. Lens keys
+      # ("lens:<id>:<label>[:<option>]") carry two extra colons.
+      def self.split_key(key)
+        key = key.to_s
+        if key.start_with?("#{Lenses::KEY_PREFIX}:")
+          prefix, id, label, option = key.split(":", 4)
+          [ "#{prefix}:#{id}:#{label}", option ]
+        else
+          key.split(":", 2)
+        end
       end
 
       def keywords(query)

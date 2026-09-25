@@ -124,7 +124,7 @@ The returned `Truffler::Search::Result` exposes:
 For the "N new matches" row on a later request, pass the watermark back in:
 
 ```ruby
-Email.jev_new_matches_count(params[:q], tenant: account.id, scope: account.emails, since: Time.iso8601(params[:since]))
+Email.jev_new_matches_count(params[:q], tenant: account.id, scope: account.emails, user: current_user, since: Time.iso8601(params[:since]))
 ```
 
 ## Smart search and streaming

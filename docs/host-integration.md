@@ -13,7 +13,7 @@ Truffler returns data. Your app renders it. This guide maps each field Truffler 
 | Smart search invite row | `result.invite_row` | `nil` means no row. Otherwise it is `{query:, reason:}`, where `reason` is one of the values below. |
 | Pending indicator | `result.encoding_status` | `:pending` means the query encoding is in flight, so a reload shortly will rank by intent. `:cached` means intent ranking already applied. `:none` means no encoding applies. |
 | Explicit action hint | `result.explicit_action` | The surface's declared action (`:enter`, `:key`, or `:row`), or nil when no `surface:` was passed. Label the invite row with it. |
-| "N new matches" row | `result.watermark`, then `Model.jev_new_matches_count(query, tenant:, scope:, since:)` | Store the watermark with the rendered list and poll or recount later. Hide the row at 0. `result.new_matches_count` gives the same count for a result still in memory. |
+| "N new matches" row | `result.watermark`, then `Model.jev_new_matches_count(query, tenant:, scope:, user:, since:)` | Store the watermark with the rendered list and poll or recount later. Hide the row at 0. `result.new_matches_count` gives the same count for a result still in memory. |
 | Promoted marks | `result.promoted_ids(run)` | Keystroke rows that the Smart run placed in Strong or Possible. Mark them in place without moving them. |
 | Paused note | `result.smart_ranking_paused?(run)` | True when the run hit the rerank budget. |
 

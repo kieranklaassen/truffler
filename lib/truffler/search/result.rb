@@ -78,8 +78,9 @@ module Truffler
       end
 
       def chip(key, kind)
-        label, option = key.split(":", 2)
-        name = option ? "#{label.humanize}: #{option}" : label.humanize
+        label, option = Encoding.split_key(key)
+        title = label.split(":").last.humanize
+        name = option ? "#{title}: #{option}" : title
         { key: key, label: label, kind: kind, name: name }
       end
 

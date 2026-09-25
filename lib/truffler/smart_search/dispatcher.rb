@@ -54,12 +54,12 @@ module Truffler
 
       def await_encoding(run)
         model = run.model
-        return if model.truffler_definition.labels.empty?
+        return if model.truffler_definition.vocabulary.labels_for(tenant_key: run.tenant_key, user_key: run.user_key).empty?
 
         query = run.search_query
         return if query.blank?
 
-        key = @encodings.key(model, query, tenant_key: run.tenant_key)
+        key = @encodings.key(model, query, tenant_key: run.tenant_key, user_key: run.user_key)
         encoding =
           if @encodings.encoded?(key) then @encodings.read_encoding(key, query)
           elsif @encodings.in_flight?(key) then @encoder.await(key, deadline: @deadline, query: query)
