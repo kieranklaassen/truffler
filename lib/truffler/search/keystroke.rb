@@ -39,7 +39,7 @@ module Truffler
         explicit_action = surface_action
         cached = read_encoding
         status = encoding_status(cached)
-        encoding = cached&.without(suppressed)
+        encoding = visible_lenses_only(cached&.without(suppressed), record_usage: true)
         sql = sql(encoding)
         records = sql.relation(scope, limit: limit).to_a
         result = Result.new(records: records, query: query, encoding: encoding, encoding_status: status, watermark: watermark,
@@ -52,7 +52,7 @@ module Truffler
       # How many records the same search would return that arrived after
       # `since` (R25). Reads the cache only and never prefetches.
       def count(since:)
-        sql(read_encoding&.without(suppressed)).candidates(scope)
+        sql(visible_lenses_only(read_encoding&.without(suppressed))).candidates(scope)
           .where(model.arel_table[@definition.arrived_at_column].gt(since)).count
       end
 
@@ -76,7 +76,24 @@ module Truffler
       def read_encoding
         return if query.blank? || @definition.labels.empty?
 
-        @cache.read(model, query, tenant_key: tenant_key)
+        @cache.read(model, query, tenant_key: tenant_key, user_key: user_key)
+      end
+
+      # Drops lens keys this searcher cannot see (another user's personal
+      # lens, an expired lens) and counts a use of the rest (R42, R43).
+      def visible_lenses_only(encoding, record_usage: false)
+        lens_keys = encoding ? (encoding.intent_vector.keys | encoding.filters.keys | encoding.boosts.keys).select { |key| lens_id(key) } : []
+        return encoding if lens_keys.empty?
+
+        visible = Lenses.labels(model, tenant_key: tenant_key, user_key: user_key).values.map(&:lens_id).uniq
+        hidden, shown = lens_keys.partition { |key| !visible.include?(lens_id(key)) }
+        Lenses.record_usage(shown.map { |key| lens_id(key) }.uniq) if record_usage
+        encoding.without(hidden)
+      end
+
+      def lens_id(key)
+        prefix, id = key.split(":", 3)
+        Integer(id, exception: false) if prefix == Lenses::KEY_PREFIX
       end
 
       def read_vector

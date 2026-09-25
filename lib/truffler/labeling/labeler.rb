@@ -22,17 +22,19 @@ module Truffler
         tenant_key = tenant_key_of(states)
         records = load_records(states)
         vocabulary = definition.vocabulary
-        fingerprints = vocabulary.fingerprints(tenant_key: tenant_key)
-        version = vocabulary.version(tenant_key: tenant_key)
+        @labels = vocabulary.labels_for(tenant_key: tenant_key, all_users: true)
+        fingerprints = vocabulary.fingerprints(tenant_key: tenant_key, all_users: true)
+        version = vocabulary.version(tenant_key: tenant_key, all_users: true)
         states_by_id = states.index_by { |state| state.record_id.to_s }
 
         stored = stored_fingerprints(records)
-        pending = records.map { |record| [ record, stale_keys(stored[record.id.to_s].to_h, fingerprints, tenant_key) ] }
+        askable = askable_labels
+        pending = records.map { |record| [ record, stale_keys(stored[record.id.to_s].to_h, fingerprints, tenant_key, askable) ] }
         current, pending = pending.partition { |_, keys| keys.empty? }
         Records::RecordState.mark_labeled(current.map { |record, _| states_by_id[record.id.to_s].id }, version: version)
         Embeddings::LabelVector.new(model).write(current.map { |record, _| record.id }, tenant_key: tenant_key)
 
-        requests = RequestBuilder.new(definition, tenant_key: tenant_key).build(pending)
+        requests = RequestBuilder.new(definition, tenant_key: tenant_key, labels: @labels).build(pending)
         cost = 0.0
         requests.each_with_index do |request, index|
           decision = budget.acquire(priority: priority, tenant_key: (tenant_key if index.zero?),
@@ -42,6 +44,7 @@ module Truffler
 
           answers = client.ask(state: request.state, questions: request.questions, priority: decision.priority)
           cost += answers.usage&.cost.to_f
+          charge_lenses(request, answers.usage&.cost.to_f)
           store(request, answers, fingerprints, tenant_key, version, states_by_id)
         end
 
@@ -73,10 +76,31 @@ module Truffler
         records
       end
 
-      def stale_keys(stored, fingerprints, tenant_key)
-        definition.labels.values.reject do |label|
+      def stale_keys(stored, fingerprints, tenant_key, askable)
+        askable.reject do |label|
           label.storage_keys(tenant_key).all? { |key| stored[key] == fingerprints[label.key] }
         end.map(&:key)
+      end
+
+      # Every label except those of lenses at their spend cap (R43).
+      def askable_labels
+        lens_labels = @labels.values.grep(Lenses::LensLabel)
+        @lenses = nil
+        return @labels.values if lens_labels.empty?
+
+        @lenses = Lenses::Lens.where(id: lens_labels.map(&:lens_id).uniq).index_by(&:id)
+        @labels.values.reject { |label| label.is_a?(Lenses::LensLabel) && @lenses[label.lens_id]&.spend_cap_reached? }
+      end
+
+      # Splits a request's cost over its questions and adds each lens's share
+      # to that lens's spend.
+      def charge_lenses(request, cost)
+        return if @lenses.blank? || cost.zero?
+
+        keys = request.entries.values.flat_map { |_, keys| keys }
+        keys.filter_map { |key| @labels[key] }.grep(Lenses::LensLabel).group_by(&:lens_id).each do |lens_id, asked|
+          @lenses[lens_id]&.record_spend!(cost * asked.size / keys.size)
+        end
       end
 
       def stored_fingerprints(records)
@@ -88,7 +112,8 @@ module Truffler
         now = Time.current
         rows = request.entries.flat_map do |tag, (record, keys)|
           keys.flat_map do |key|
-            label_rows(definition.label(key), Questions.tagged_id(tag, key), answers, tenant_key).map do |label_key, value|
+            label = @labels.fetch(key)
+            label_rows(label, Questions.tagged_id(tag, label.question_key), answers, tenant_key).map do |label_key, value|
               { record_type: record_type, record_id: record.id, tenant_key: tenant_key, label_key: label_key,
                 value: value, fingerprint: fingerprints[key], labeled_at: now }
             end

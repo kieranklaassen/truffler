@@ -22,7 +22,7 @@ module Truffler
         @generator = nil
         @drafter_model = nil
         @authorize_lens = nil
-        @user_key = ->(user) { user.respond_to?(:id) ? user.id : user }
+        @user_key = ->(user) { user.is_a?(ActiveRecord::Base) ? Search::Keystroke.user_key(user) : (user.respond_to?(:id) ? user.id : user) }
       end
 
       def creators=(value)

@@ -3,7 +3,10 @@ module Truffler
     # Where keystroke search finds query encodings and query vectors (R12,
     # R15). Keys digest the model, the normalized query, and the vocabulary
     # version, plus the tenant when the vocabulary has per-tenant choices.
-    # Values hold decisions and floats, never query text.
+    # Values hold decisions and floats, never query text. Encoding keys use
+    # the searcher's vocabulary version, which holds the lenses that searcher
+    # can see (KTD21), so a personal lens's encoding is never shared; query
+    # vectors do not depend on lenses and stay keyed per tenant.
     #
     # On a miss, search calls `prefetch`, which hands off to
     # `config.encoding_prefetch` (the query encoder, U9). The hook is called
@@ -17,22 +20,22 @@ module Truffler
         @store = store
       end
 
-      def key(model, query, tenant_key:)
-        "truffler/enc/#{digest(model, query, tenant_key)}"
+      def key(model, query, tenant_key:, user_key: nil)
+        "truffler/enc/#{digest(model, query, tenant_key, user_key)}"
       end
 
       def vector_key(model, query, tenant_key:)
-        "truffler/vec/#{digest(model, query, tenant_key)}"
+        "truffler/vec/#{digest(model, query, tenant_key, nil)}"
       end
 
-      def read(model, query, tenant_key:)
+      def read(model, query, tenant_key:, user_key: nil)
         query = cast(query)
-        Encoding.load(@store.read(key(model, query, tenant_key: tenant_key)), query)
+        Encoding.load(@store.read(key(model, query, tenant_key: tenant_key, user_key: user_key)), query)
       end
 
-      def write(model, query, encoding, tenant_key:, expires_in: TTL)
+      def write(model, query, encoding, tenant_key:, user_key: nil, expires_in: TTL)
         query = cast(query)
-        @store.write(key(model, query, tenant_key: tenant_key), encoding.dump(query), expires_in: expires_in)
+        @store.write(key(model, query, tenant_key: tenant_key, user_key: user_key), encoding.dump(query), expires_in: expires_in)
       end
 
       def read_vector(model, query, tenant_key:)
@@ -48,7 +51,8 @@ module Truffler
         return false unless hook
 
         query = cast(query)
-        hook.call(model, query, cache_key: key(model, query, tenant_key: tenant_key), tenant_key: tenant_key, user_key: user_key).present?
+        hook.call(model, query, cache_key: key(model, query, tenant_key: tenant_key, user_key: user_key), tenant_key: tenant_key,
+          user_key: user_key).present?
       end
 
       private
@@ -57,11 +61,11 @@ module Truffler
         query.is_a?(Query) ? query : Query.new(query)
       end
 
-      def digest(model, query, tenant_key)
+      def digest(model, query, tenant_key, user_key)
         definition = model.truffler_definition
         tenant = tenant_key&.to_s if definition.per_tenant_vocabulary?
-        Canonical.digest(record_type: model.polymorphic_name, query: query.normalized,
-          vocabulary_version: definition.vocabulary.version(tenant_key: tenant), tenant_key: tenant)
+        version = definition.vocabulary.version(tenant_key: tenant_key&.to_s, user_key: user_key)
+        Canonical.digest(record_type: model.polymorphic_name, query: query.normalized, vocabulary_version: version, tenant_key: tenant)
       end
     end
   end
