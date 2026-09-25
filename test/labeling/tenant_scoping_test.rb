@@ -344,6 +344,31 @@ class TenantScopingTest < Truffler::TestCase
     assert_equal 1, Backfill.status(TenantNote, tenant_key: "1")[:total]
   end
 
+  test "0.1.6: status and backfill work with an index_scope that orders (SELECT DISTINCT on Postgres)" do
+    ordered = Class.new(ActiveRecord::Base) do
+      self.table_name = "tenant_notes"
+      def self.name = "OrderedTenantNote"
+      include Truffler::Model
+      truffler do
+        tenant :account_id
+        reads :title
+        label :spam, :noul, question: "Is this note spam?"
+        index_scope ->(relation) { relation.where(archived: false).order(:title) }
+      end
+    end
+    Truffler.config.client = Truffler::Clients::Fake.new.answer(:spam, 0.1)
+    ordered.create!(account_id: 1, title: "B")
+    ordered.create!(account_id: 2, title: "A")
+    hide_states
+    disable_tenant("2")
+
+    Backfill.new(ordered).run
+    status = Backfill.status(ordered)
+
+    assert_equal 1, status[:total]
+    assert_equal 1, status[:current]
+  end
+
   test "0.1.5: status ignores state rows left by records that moved out of index_scope (Bugbot)" do
     kept = create_note(account_id: 1)
     archived = create_note(account_id: 1)

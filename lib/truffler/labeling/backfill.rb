@@ -220,7 +220,7 @@ module Truffler
         return [ scope.where(definition.tenant_column => @tenant_key), [ @tenant_key ] ] if @tenant_key
         return [ scope, nil ] unless Truffler.config.tenant_enabled
 
-        tenants = scope.distinct.pluck(definition.tenant_column).map(&:to_s).select { |tenant_key| enabled?(tenant_key) }
+        tenants = scope.reorder(nil).distinct.pluck(definition.tenant_column).map(&:to_s).select { |tenant_key| enabled?(tenant_key) }
         [ scope.where(definition.tenant_column => tenants), tenants ]
       end
 
