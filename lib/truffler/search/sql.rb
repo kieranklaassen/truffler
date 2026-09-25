@@ -67,7 +67,7 @@ module Truffler
       end
 
       def keywords
-        encoding.keywords(query)
+        @keywords ||= encoding.keywords(query, keep: -> { Filler.label_words(definition, tenant_key) })
       end
 
       private

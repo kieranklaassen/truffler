@@ -134,7 +134,8 @@ module Truffler
         end
 
         query = Search::Query.new(request.state["query"])
-        roles, sources, soft = reconcile(query, request.token_ids.transform_values { |id| answers.choice(id) }, names)
+        roles, sources, soft = reconcile(query, request.token_ids.transform_values { |id| answers.choice(id) }, names,
+          Search::Filler.label_words(model.truffler_definition, tenant_key))
         tokens = ->(positions) { positions.map { |position| query.tokens[position] } }
         Search::Encoding.new(filters: filters, boosts: boosts, intent_vector: intent,
           keyword_tokens: tokens.call(roles.keys.select { |position| roles[position] == "keyword" }),
@@ -206,16 +207,19 @@ module Truffler
       # keyword naming an applied label becomes a label term; stopwords and
       # filler words become filler unless they are all that would be left of
       # an encoding that applies no label and no time range (Search::Filler).
-      # A word Jev called a label term that names no applied label locally
-      # is sourced to every applied label.
-      def reconcile(query, answered, names)
+      # A word naming any declared label (`keep`, see Filler.label_words) is
+      # never filler, even when Jev calls it that. A word Jev called a label
+      # term that names no applied label locally is sourced to every applied
+      # label.
+      def reconcile(query, answered, names, keep)
         roles = query.tokens.each_index.to_h do |position|
-          [ position, query.time_position?(position) ? "time" : answered.fetch(position, "keyword") ]
+          role = query.time_position?(position) ? "time" : answered.fetch(position, "keyword")
+          [ position, role == "filler" && keep.include?(query.tokens[position].singularize) ? "keyword" : role ]
         end
         matches = roles.keys.to_h { |position| [ position, roles[position] == "time" ? {} : label_matches(query.tokens[position], names) ] }
         words = roles.keys.select { |position| roles[position] == "keyword" && !query.exact_tokens.include?(query.tokens[position]) }
         words.each { |position| roles[position] = "label_term" if matches[position].any? }
-        filler = words.select { |position| roles[position] == "keyword" && Search::Filler.word?(query.tokens[position]) }
+        filler = words.select { |position| roles[position] == "keyword" && Search::Filler.word?(query.tokens[position], keep: keep) }
         Search::Filler.drop(filler, keyword_count: roles.values.count("keyword"), anchored: names.any? || !query.time_phrase.nil?,
           stopword: ->(position) { Search::Filler.stopword?(query.tokens[position]) })
           .each { |position| roles[position] = "filler" }

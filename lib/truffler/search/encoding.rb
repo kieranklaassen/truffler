@@ -85,10 +85,12 @@ module Truffler
       end
 
       # Without encoder decisions (a cold cache), every search token that is
-      # not a label term, minus filler words (see Filler).
-      def keywords(query)
+      # not a label term, minus filler words (see Filler). `keep` is called
+      # only then, for the words that are never filler.
+      def keywords(query, keep: nil)
         keyword_tokens ||
-          Filler.keywords(query.search_tokens - label_term_tokens, anchored: !empty? || !time.nil?, exact: query.exact_tokens)
+          Filler.keywords(query.search_tokens - label_term_tokens, anchored: !empty? || !time.nil?, exact: query.exact_tokens,
+            keep: keep&.call)
       end
 
       # The cache form: decisions plus token positions in the normalized
