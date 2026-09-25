@@ -19,6 +19,10 @@ loader.do_not_eager_load("#{__dir__}/truffler/lenses/ruby_llm_generator.rb")
 loader.setup
 
 module Truffler
+  # The answer to a choice question in query encoding that means "no
+  # option". The colon keeps it out of host option names, which reject it.
+  NO_OPTION = "truffler:none".freeze
+
   class << self
     def config
       @config ||= Configuration.new

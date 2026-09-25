@@ -52,7 +52,10 @@ module Truffler
       options = Array(options).to_h { |option| [ option, nil ] } unless options.is_a?(Hash)
       raise DefinitionError, "#{key}: choice options for tenant #{tenant_key.inspect} are empty" if options.empty?
 
-      options.to_h { |option, description| [ option.to_s, description ] }
+      options = options.to_h { |option, description| [ option.to_s, description ] }
+      raise DefinitionError, "#{key}: the option name #{NO_OPTION} is reserved" if options.key?(NO_OPTION)
+
+      options
     end
 
     def question(tenant_key = nil)

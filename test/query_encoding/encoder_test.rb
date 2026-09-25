@@ -13,6 +13,18 @@ class WeightedEmail < ActiveRecord::Base
   end
 end
 
+class ProductEmail < ActiveRecord::Base
+  self.table_name = "emails"
+  include Truffler::Model
+
+  truffler do
+    tenant :account_id
+    reads :subject
+    label :product, :choice, question: "Which product is this about?", options: { "cora" => "Cora", "none" => "Not about any product" },
+      filter_at: 0.5
+  end
+end
+
 class QueryEncodingEncoderTest < Truffler::TestCase
   include Truffler::Test::SearchHelpers
 
@@ -21,7 +33,7 @@ class QueryEncodingEncoderTest < Truffler::TestCase
 
   setup do
     Truffler.config.secret_key_base = "test-secret-key-base"
-    @fake = Truffler::Clients::Fake.new { |tag| { "intent" => "ignore", "option" => "none", "token" => "keyword" }[tag] }
+    @fake = Truffler::Clients::Fake.new { |tag| { "intent" => "ignore", "option" => Truffler::NO_OPTION, "token" => "keyword" }[tag] }
     Truffler.config.client = @fake
     @cache = Truffler::Search::EncodingCache.new
   end
@@ -42,7 +54,7 @@ class QueryEncodingEncoderTest < Truffler::TestCase
     %w[needs_action urgent category importance].each do |key|
       assert_equal %w[filter boost ignore], questions["intent__#{key}"]["criteria"].keys
     end
-    assert_equal %w[billing travel other none], questions["option__category"]["criteria"].keys
+    assert_equal [ "billing", "travel", "other", Truffler::NO_OPTION ], questions["option__category"]["criteria"].keys
     assert_equal %w[keyword label_term filler], questions["token__1"]["criteria"].keys
     assert_equal({ "query" => "urgent billing emails", "tokens" => %w[urgent billing emails] }, request.state.except("labels"))
     assert_includes questions["token__1"]["instructions"], "tokens[1]"
@@ -112,7 +124,7 @@ class QueryEncodingEncoderTest < Truffler::TestCase
   end
 
   test "a choice label with no option named, or ignored, contributes nothing" do
-    @fake.answer("intent__category", "filter").answer("option__category", "none")
+    @fake.answer("intent__category", "filter").answer("option__category", Truffler::NO_OPTION)
 
     assert_empty Encoder.new.encode(prefetch(InboxEmail, "some category")).filters
   end
@@ -224,6 +236,27 @@ class QueryEncodingEncoderTest < Truffler::TestCase
 
     assert encoding.empty?
     assert_equal %w[urgent travel], encoding.keyword_tokens
+  end
+
+  test "0.1.1: a host option named none can be filtered, and the reserved no-option answer applies nothing" do
+    questions = Encoder.new.request(ProductEmail, Query.new("x"), tenant_key: "1").questions
+    assert_equal [ "cora", "none", Truffler::NO_OPTION ], questions["option__product"]["criteria"].keys
+    assert_equal "Not about any product", questions["option__product"]["criteria"]["none"]
+
+    @fake.answer("intent__product", "filter").answer("option__product", "none")
+    assert_equal({ "product:none" => 0.5 }, Encoder.new.encode(prefetch(ProductEmail, "no product")).filters)
+
+    @fake.answer("option__product", Truffler::NO_OPTION)
+    assert_empty Encoder.new.encode(prefetch(ProductEmail, "some product")).filters
+  end
+
+  test "0.1.1: a host option may not use the reserved no-option name" do
+    label = Truffler::LabelDefinition.new(:product, :choice, question: "Which?", options: ->(_) { [ "cora", Truffler::NO_OPTION ] })
+
+    assert_raises(Truffler::DefinitionError) { label.options("1") }
+    assert_raises(Truffler::DefinitionError) do
+      Truffler::LabelDefinition.new(:product, :choice, question: "Which?", options: [ "cora", Truffler::NO_OPTION ])
+    end
   end
 
   test "covers AE6: a 3 s encoding misses a 1 s deadline, is cached anyway, and the next keystroke uses it" do

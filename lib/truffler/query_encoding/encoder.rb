@@ -2,7 +2,7 @@ module Truffler
   module QueryEncoding
     # Encodes one pending query (KTD9). It asks a fixed question set: each
     # label gets `filter | boost | ignore`, each choice label also gets its
-    # options plus `none`, and each of the first 12 word tokens gets
+    # options plus `Truffler::NO_OPTION`, and each of the first 12 word tokens gets
     # `keyword | label_term | filler`. Exact-text tokens (digits, dates,
     # quoted phrases, emails, identifiers) are keywords decided locally and
     # never asked (R18). Query text travels only in `state` ("query" and
@@ -32,7 +32,7 @@ module Truffler
         "label_term" => "A word that names one of the labels in `labels`, or one of its options, rather than text to match",
         "filler" => "A word that carries no meaning for the search"
       }.freeze
-      NO_OPTION = "none".freeze
+      NO_OPTION = Truffler::NO_OPTION
       STOPWORDS = %w[
         a about all an and any are at be by for from have i in is it me my now of on or our please so some that the their
         them there they this to up us was we what when where which who why with you your
@@ -176,7 +176,7 @@ module Truffler
       end
 
       # The label's storage key the query names, or nil for a choice label
-      # whose option answer is `none`.
+      # whose option answer is NO_OPTION.
       def storage_key(label, answers, tenant_key)
         return label.key unless label.type == :choice
 

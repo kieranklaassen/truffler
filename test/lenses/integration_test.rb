@@ -243,7 +243,7 @@ class LensIntegrationTest < Truffler::TestCase
 
     answers = Truffler::Answers.new(request.questions.keys.to_h do |id|
       value = { "intent__lens#{lens.id}__language" => "boost", "option__lens#{lens.id}__language" => "dutch" }[id]
-      value ||= id.start_with?("token__") ? "keyword" : (id.start_with?("option__") ? "none" : "ignore")
+      value ||= id.start_with?("token__") ? "keyword" : (id.start_with?("option__") ? Truffler::NO_OPTION : "ignore")
       [ id, { "type" => "choice", "choice" => value, "probabilities" => { value => 1.0 } } ]
     end)
     encoding = encoder.encoding_for(FeedMessage, request, answers, tenant_key: "1")
