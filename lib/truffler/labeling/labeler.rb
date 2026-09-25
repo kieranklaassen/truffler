@@ -33,9 +33,11 @@ module Truffler
         askable = askable_labels
         stale = records.map { |record| [ record, stale_keys(stored[record.id.to_s].to_h, fingerprints, tenant_key, askable) ] }
         supplied = askable.select(&:supplied?).map(&:key)
-        written = Supplied.new(model).write(stale.map { |record, keys| [ record, keys & supplied ] }, tenant_key: tenant_key)
+        supplier = Supplied.new(model)
+        written = supplier.write(stale.map { |record, keys| [ record, keys & supplied ] }, tenant_key: tenant_key)
         current, pending = stale.map { |record, keys| [ record, keys - supplied ] }.partition { |_, keys| keys.empty? }
-        Records::RecordState.mark_labeled(current.map { |record, _| states_by_id[record.id.to_s].id }, version: version)
+        settled = current.reject { |record, _| supplier.failed_ids.include?(record.id) }
+        Records::RecordState.mark_labeled(settled.map { |record, _| states_by_id[record.id.to_s].id }, version: version)
         Embeddings::LabelVector.new(model).write(current.map { |record, _| record.id } - written, tenant_key: tenant_key)
 
         requests = RequestBuilder.new(definition, tenant_key: tenant_key, labels: @labels).build(pending)
@@ -43,7 +45,10 @@ module Truffler
         requests.each_with_index do |request, index|
           decision = budget.acquire(priority: priority, tenant_key: (tenant_key if index.zero?),
             records: index.zero? ? pending.size : 1)
-          return Result.new(labeled: current.size, requests: index, cost: cost, demoted: true) if decision.demoted?
+          if decision.demoted?
+            retry_failed_supplied(supplier.failed_ids, states_by_id)
+            return Result.new(labeled: current.size, requests: index, cost: cost, demoted: true)
+          end
           raise BudgetExhausted, "no Jev budget for #{priority} labeling" if decision.denied?
 
           answers = client.ask(state: request.state, questions: request.questions, priority: decision.priority)
@@ -52,10 +57,19 @@ module Truffler
           store(request, answers, fingerprints, tenant_key, version, states_by_id)
         end
 
+        retry_failed_supplied(supplier.failed_ids, states_by_id)
         Result.new(labeled: records.size, requests: requests.size, cost: cost, demoted: false)
       end
 
       private
+
+      # A failed `from` must not leave its record looking current, or backfill
+      # would never ask again. Supplied labels cost nothing, so retrying at
+      # backfill priority is free.
+      def retry_failed_supplied(record_ids, states_by_id)
+        ids = record_ids.filter_map { |id| states_by_id[id.to_s]&.id }
+        Records::RecordState.mark_supplied_failed(ids, error_class: SuppliedLabelFailed.name) if ids.any?
+      end
 
       def definition
         model.truffler_definition

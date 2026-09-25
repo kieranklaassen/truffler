@@ -2,6 +2,7 @@ module Truffler
   class Error < StandardError; end
 
   class DefinitionError < Error; end
+  class SuppliedLabelFailed < Error; end
   class MissingScope < Error; end
   class LiveCallInTest < Error; end
   class IncompleteAnswers < Error; end

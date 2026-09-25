@@ -315,4 +315,28 @@ class SuppliedLabelsTest < Truffler::TestCase
     assert_includes request.questions["intent__sentiment"]["instructions"], "the feedback's overall sentiment"
     assert_includes request.questions["intent__anger"]["instructions"], %("anger" (anger))
   end
+
+  test "a failed supplied answer leaves the record pending at backfill priority, and backfill retries it for free" do
+    record = feedback!(sentiment: "furious", anger: 0.4)
+    label(SuppliedFeedback, budget: NoBudget.new)
+
+    state = Truffler::Records::RecordState.find_by!(record_id: record.id)
+    assert_equal [ "pending", "backfill", 1, "Truffler::SuppliedLabelFailed" ],
+      [ state.status, state.priority, state.attempts, state.last_error_class ]
+
+    record.update_columns(sentiment: "negative")
+    calls = jev_calls { Truffler::Labeling::Backfill.new(SuppliedFeedback).run }
+    assert_empty calls
+    assert_equal 1.0, labels_of(record)["sentiment:negative"]
+    assert_equal "labeled", state.reload.status
+  end
+
+  test "a supplied answer that keeps failing ends failed after max_attempts" do
+    Truffler.config.max_attempts = 2
+    record = feedback!(sentiment: "furious", anger: 0.4)
+    label(SuppliedFeedback, budget: NoBudget.new)
+    Truffler::Labeling::Backfill.new(SuppliedFeedback).run
+
+    assert_equal [ "failed", 2 ], Truffler::Records::RecordState.find_by!(record_id: record.id).then { |s| [ s.status, s.attempts ] }
+  end
 end

@@ -5,13 +5,14 @@ module Truffler
     # labels, and rewrites those records' label vectors. No Jev request, no
     # budget slot, no spend. A nil answer stores nothing, so the label reads
     # as missing rather than 0. A `from` that raises or answers out of shape
-    # is instrumented as `supplied_label_failed` and skipped, leaving its
-    # stored rows to serve until the next write.
+    # is instrumented as `supplied_label_failed`, skipped, and listed in
+    # `failed_ids` so the caller can retry it; its stored rows serve meanwhile.
     class Supplied
-      attr_reader :model
+      attr_reader :model, :failed_ids
 
       def initialize(model)
         @model = model
+        @failed_ids = Set.new
       end
 
       # pending: [[record, label_keys], ...]. Returns the ids written.
@@ -23,7 +24,10 @@ module Truffler
           keys.each do |key|
             label = definition.label(key)
             values = answer(label, record, tenant_key)
-            next if values == :failed
+            if values == :failed
+              failed_ids << record.id
+              next
+            end
 
             written << [ record.id, key ]
             fingerprint = label.supplied_fingerprint(tenant_key)
