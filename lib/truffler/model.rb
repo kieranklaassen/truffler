@@ -36,6 +36,18 @@ module Truffler
         Search::Keystroke.new(self, query, tenant: tenant, scope: scope, suppressed: suppressed).count(since: since)
       end
 
+      # The explicit action (R22): starts a Smart run and returns it,
+      # already reserved. The keystroke list stays as it was.
+      def jev_smart_search(query, tenant: nil, scope: nil, user: nil, surface: nil, suppressed: [])
+        SmartSearch.start(self, query, tenant: tenant, scope: scope, user: user, surface: surface, suppressed: suppressed)
+      end
+
+      # Cancels the searcher's in-flight Smart run, as on a query edit or a
+      # chip change (R24).
+      def jev_cancel_smart_search(tenant: nil, user: nil, surface: nil)
+        SmartSearch.cancel(self, tenant: tenant, user: user, surface: surface)
+      end
+
       private
 
       def install_truffler_callbacks
