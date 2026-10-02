@@ -74,11 +74,28 @@ module Truffler
         search = @sql.call(@encoding.relax(missing))
         alias_name = "truffler_relaxed_#{index}"
         scores = search.score_column_names
-        columns = @model.column_names.map { |name| "#{alias_name}.#{quote_column(name)}" } +
+        columns = selected_columns(scope).map { |name| "#{alias_name}.#{quote_column(name)}" } +
           SCORE_COLUMNS.map { |name| scores.include?(name) ? "#{alias_name}.#{name}" : "0.0 AS #{name}" } +
           [ "#{tier} AS #{TIER}", "#{index} AS #{BRANCH}" ]
         where = guard.any? ? " WHERE #{guard.join(' AND ')}" : ""
         "SELECT #{columns.join(', ')} FROM (#{search.relation(scope, limit: limit).to_sql}) #{alias_name}#{where}"
+      end
+
+      # The scope's own select list when it narrows one (Sql#relation keeps
+      # it), else every column of the model.
+      def selected_columns(scope)
+        names = scope.select_values.flat_map { |value| selected_names(value) }
+        names.empty? ? @model.column_names : names.uniq
+      end
+
+      def selected_names(value)
+        case value
+        when Arel::Attributes::Attribute then [ value.name.to_s ]
+        when Arel::Nodes::As then [ value.right.to_s.delete('"`[]') ]
+        else
+          name = value.to_s.split(/\s+AS\s+/i).last.strip.split(".").last.delete('"`[]')
+          name == "*" ? @model.column_names : [ name ]
+        end
       end
 
       def ordering
