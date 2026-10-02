@@ -58,6 +58,32 @@ class SearchRelaxationTest < Truffler::TestCase
     assert_equal 2, statements.size, statements.join("\n")
   end
 
+  test "0.1.7: relaxation keeps a scope's narrowed select list" do
+    bounced = ticket!("Customer email bounced", { "product:cora" => 0.9, "source:chat" => 0.9 }, received_at: 2.hours.ago)
+    login = ticket!("Login fails", { "product:cora" => 0.9, "source:chat" => 0.8 }, received_at: 1.hour.ago)
+    cache_encoding!(RelaxedTicket, "cora email", **CORA_EMAIL)
+    scope = RelaxedTicket.select(:id, :account_id, "emails.subject", Arel.sql("emails.received_at AS received_at"))
+
+    result = search(RelaxedTicket, "cora email", scope: scope)
+
+    assert_equal [ bounced.id, login.id ], result.ids
+    assert_equal [ "source:email" ], result.relaxed_labels
+    assert_equal "Customer email bounced", result.records.first.subject
+    assert_not result.records.first.has_attribute?(:body)
+  end
+
+  test "0.1.7: relaxation orders by the order column only when the scope selects it" do
+    bounced = ticket!("Customer email bounced", { "product:cora" => 0.9, "source:chat" => 0.9 }, received_at: 2.hours.ago)
+    login = ticket!("Login fails", { "product:cora" => 0.9, "source:chat" => 0.8 }, received_at: 1.hour.ago)
+    cache_encoding!(RelaxedTicket, "cora email", **CORA_EMAIL)
+
+    statements = selects_during { @result = search(RelaxedTicket, "cora email", scope: RelaxedTicket.select(:id, :subject)) }
+
+    assert_equal [ bounced.id, login.id ].sort, @result.ids.sort
+    assert_equal [ "source:email" ], @result.relaxed_labels
+    assert_not_includes statements.last.split("truffler_relaxed ORDER BY").last, "received_at"
+  end
+
   test "0.1.6: zero results with no keyword matches stay empty and relax nothing" do
     ticket!("Login fails", { "product:jev" => 0.9, "source:chat" => 0.9 })
     cache_encoding!(RelaxedTicket, "email", filters: { "source:email" => 0.5 }, keyword_tokens: [], label_term_tokens: %w[email],

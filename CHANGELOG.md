@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.7]
+
+A fix from the Cora integration.
+
+- Zero-result relaxation works with a scope that narrows its select list. Cora's local search scope selects ten of an email's columns, and every query that matched nothing under its filters ("emails I need to reply to") raised `PG::UndefinedColumn: truffler_relaxed_0.action_id`: each relaxed branch listed every model column, but its subquery keeps the scope's select. The branches now list the scope's selected columns (`:id`, `"emails.subject"`, `emails.received_at AS received_at`, Arel attributes), and every column only when the scope selects none or `*`. The UNION's `ORDER BY` can only sort by what the branches select, so it breaks ties on the model's order column and primary key only when the scope selects them.
+
 ## [0.1.6]
 
 A fix from happyhappy production and follow-ups from 0.1.5.
