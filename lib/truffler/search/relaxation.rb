@@ -66,7 +66,7 @@ module Truffler
           guard = (filters.keys - missing).map { |key| present.call(key) } + missing.map { |key| "NOT #{present.call(key)}" }
           branch_sql(scope, missing, index, tier: full ? 0 : 1, guard: full ? [] : guard, limit: limit)
         end
-        sql = "SELECT * FROM (#{selects.join(' UNION ALL ')}) truffler_relaxed ORDER BY #{ordering.join(', ')}"
+        sql = "SELECT * FROM (#{selects.join(' UNION ALL ')}) truffler_relaxed ORDER BY #{ordering(scope).join(', ')}"
         limit ? "#{sql} LIMIT #{Integer(limit)}" : sql
       end
 
@@ -98,10 +98,15 @@ module Truffler
         end
       end
 
-      def ordering
+      # Unlike Sql#relation, which sorts on the table, the UNION can only
+      # sort by what its branches select: a scope that narrows the order
+      # column or the primary key away gives up that tie-break.
+      def ordering(scope)
+        columns = selected_columns(scope)
         order_column, direction = @model.truffler_definition.order
-        [ "#{TIER} DESC", "truffler_score DESC", ("#{quote_column(order_column)} #{direction == :asc ? 'ASC' : 'DESC'}" if order_column),
-          "#{quote_column(@model.primary_key)} DESC" ].compact
+        [ "#{TIER} DESC", "truffler_score DESC",
+          ("#{quote_column(order_column)} #{direction == :asc ? 'ASC' : 'DESC'}" if columns.include?(order_column.to_s)),
+          ("#{quote_column(@model.primary_key)} DESC" if columns.include?(@model.primary_key)) ].compact
       end
 
       def quote_column(name)
